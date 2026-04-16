@@ -243,7 +243,8 @@
   <button class="tb-btn" id="btn-align-center" title="居中">≡ 中</button>
   <button class="tb-btn" id="btn-align-right" title="右对齐">≡ 右</button>
 
-  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">下载全部页面</button>
+  <button class="btn-download" id="btn-overwrite" disabled onclick="overwriteOriginal()" style="background:#f4a300;">更新原稿</button>
+  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">保存副本</button>
 </div>
 
 <!-- 警告条 -->
@@ -278,8 +279,9 @@
 let currentMediaId = null;
 let currentMediaTag = null;
 let isEditing = false;
-let assetMap = {};  // 文件名/相对路径 → base64 data URL
-let isFolderUpload = false;  // 是否通过文件夹上传
+let assetMap = {};
+let isFolderUpload = false;
+let originalFiles = {};  // filename → File 对象（用于更新原稿）
 
 // ── 页面历史栈（存储每页的 HTML 字符串） ──
 let pageStack = [];   // [{html, filename}]
@@ -386,6 +388,52 @@ const INJECT_SCRIPT = `
   document.querySelectorAll('a, button').forEach(function(el, i) {
     el.dataset.linkId = 'link_' + i;
     addLinkOverlay(el);
+  });
+
+  // 给有背景色/渐变的元素加编辑按钮
+  function parseBg(el) {
+    var s = el.style.background || el.style.backgroundColor || '';
+    if (!s) {
+      var cs = window.getComputedStyle(el);
+      s = cs.background || cs.backgroundColor || '';
+    }
+    // 过滤掉透明和默认白/无
+    if (!s || s === 'none' || s === 'transparent' || s === 'rgba(0, 0, 0, 0)') return null;
+    if (s === 'rgb(255, 255, 255)' || s === '#fff' || s === '#ffffff') return null;
+    return s;
+  }
+
+  function addBgOverlay(el, i) {
+    if (el.dataset.bgOverlayAdded) return;
+    var bg = parseBg(el);
+    if (!bg) return;
+    el.dataset.bgOverlayAdded = '1';
+    el.dataset.bgId = 'bg_' + i;
+    // 确保元素有 position 以便绝对定位按钮
+    var pos = window.getComputedStyle(el).position;
+    if (pos === 'static') el.style.position = 'relative';
+    var btn = document.createElement('span');
+    btn.textContent = '🎨 背景';
+    btn.style.cssText = 'position:absolute;top:4px;right:4px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:2px 7px;border-radius:4px;cursor:pointer;z-index:9998;user-select:none;pointer-events:auto;white-space:nowrap;';
+    btn.contentEditable = 'false';
+    btn.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      // 读取内联 style（优先），否则用 computed
+      var inlineBg = el.style.background || el.style.backgroundColor || '';
+      var computedBg = window.getComputedStyle(el).background;
+      window.parent.postMessage({
+        type: 'BG_CLICK',
+        id: el.dataset.bgId,
+        inline: inlineBg,
+        computed: computedBg
+      }, '*');
+    });
+    el.appendChild(btn);
+  }
+
+  document.querySelectorAll('*').forEach(function(el, i) {
+    addBgOverlay(el, i);
   });
 
   // 双击也可触发替换（兜底）
@@ -595,6 +643,8 @@ function loadHTMLFile(file) {
     document.getElementById('editor-frame').style.display = 'block';
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('btn-download').disabled = false;
+    document.getElementById('btn-overwrite').disabled = false;
+    originalFiles[file.name] = file;
     isEditing = true;
   };
   reader.readAsText(file, 'UTF-8');
@@ -657,6 +707,8 @@ window.addEventListener('message', function(e) {
     input.click();
   } else if (e.data.type === 'LINK_CLICK') {
     showLinkEditor(e.data);
+  } else if (e.data.type === 'BG_CLICK') {
+    showBgEditor(e.data);
   } else if (e.data.type === 'NAVIGATE') {
     var href = e.data.href;
     // 只处理相对路径的 .html 链接（多页面站点内部跳转）
@@ -673,6 +725,200 @@ window.addEventListener('message', function(e) {
     document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
   }
 });
+
+// ── 背景编辑弹窗 ──
+function showBgEditor(data) {
+  var raw = data.inline || data.computed || '';
+  var isGradient = /gradient/i.test(raw);
+
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;padding:28px;width:480px;';
+
+  // 把 computed rgb() 转成 hex
+  function rgbToHex(rgb) {
+    var m = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!m) return '#000000';
+    return '#' + [m[1],m[2],m[3]].map(function(x){ return (+x).toString(16).padStart(2,'0'); }).join('');
+  }
+
+  // 解析渐变色节点
+  function parseGradient(str) {
+    var type = /radial/i.test(str) ? 'radial' : 'linear';
+    var angleMatch = str.match(/(\d+)deg/);
+    var angle = angleMatch ? angleMatch[1] : '135';
+    var stops = [];
+    var stopRe = /(rgba?\([^)]+\)|#[0-9a-fA-F]{3,8}|[a-z]+)\s*([\d.]+%)?/g;
+    var m;
+    // 去掉函数头再匹配
+    var inner = str.replace(/^.*?\(/, '').replace(/\)$/, '');
+    while ((m = stopRe.exec(inner)) !== null) {
+      if (m[1] && !/^(to|from|at|circle|ellipse|closest|farthest|side|corner)$/i.test(m[1])) {
+        stops.push({ color: m[1], pos: m[2] || '' });
+      }
+    }
+    if (stops.length < 2) stops = [{ color: '#4facfe', pos: '0%' }, { color: '#00f2fe', pos: '100%' }];
+    return { type, angle, stops };
+  }
+
+  if (isGradient) {
+    var g = parseGradient(raw);
+    var stopsHtml = g.stops.map(function(s, i) {
+      var hex = s.color.startsWith('#') ? s.color.slice(0,7) : rgbToHex(s.color);
+      return '<div class="stop-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;" data-i="'+i+'">'
+        + '<input type="color" class="stop-color" value="'+hex+'" style="width:36px;height:30px;border:1px solid #ddd;border-radius:4px;padding:2px;cursor:pointer;">'
+        + '<input type="text" class="stop-pos" value="'+(s.pos||'')+'" placeholder="0%" style="width:70px;border:1px solid #ddd;border-radius:4px;padding:5px 8px;font-size:12px;">'
+        + (g.stops.length > 2 ? '<button class="stop-del" style="border:none;background:none;color:#e53935;cursor:pointer;font-size:16px;padding:0 4px;">✕</button>' : '')
+        + '</div>';
+    }).join('');
+
+    box.innerHTML = `
+      <h3 style="margin-bottom:16px;font-size:15px;">编辑渐变背景</h3>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <label style="font-size:13px;color:#555;">类型</label>
+        <select id="bg-grad-type" style="border:1px solid #ddd;border-radius:5px;padding:4px 8px;font-size:13px;">
+          <option value="linear" ${g.type==='linear'?'selected':''}>线性渐变</option>
+          <option value="radial" ${g.type==='radial'?'selected':''}>径向渐变</option>
+        </select>
+        <label style="font-size:13px;color:#555;" id="angle-label">角度</label>
+        <input id="bg-grad-angle" type="number" value="${g.angle}" min="0" max="360"
+          style="width:64px;border:1px solid #ddd;border-radius:5px;padding:4px 8px;font-size:13px;">
+        <span style="font-size:13px;color:#888;">deg</span>
+      </div>
+      <div id="bg-preview" style="height:40px;border-radius:6px;margin-bottom:16px;border:1px solid #eee;"></div>
+      <div id="stops-list">${stopsHtml}</div>
+      <button id="bg-add-stop" style="font-size:12px;color:#4285f4;background:none;border:1px dashed #4285f4;border-radius:5px;padding:4px 12px;cursor:pointer;margin-bottom:20px;">+ 添加色标</button>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="bg-cancel" style="padding:8px 20px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer;font-size:14px;">取消</button>
+        <button id="bg-confirm" style="padding:8px 20px;border:none;border-radius:6px;background:#4285f4;color:#fff;cursor:pointer;font-size:14px;font-weight:500;">确认</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    function buildGradientValue() {
+      var type = document.getElementById('bg-grad-type').value;
+      var angle = document.getElementById('bg-grad-angle').value;
+      var rows = box.querySelectorAll('.stop-row');
+      var parts = Array.from(rows).map(function(row) {
+        var c = row.querySelector('.stop-color').value;
+        var p = row.querySelector('.stop-pos').value.trim();
+        return p ? c + ' ' + p : c;
+      });
+      if (type === 'radial') return 'radial-gradient(circle, ' + parts.join(', ') + ')';
+      return 'linear-gradient(' + angle + 'deg, ' + parts.join(', ') + ')';
+    }
+
+    function updatePreview() {
+      document.getElementById('bg-preview').style.background = buildGradientValue();
+    }
+
+    // 角度 label 显隐
+    document.getElementById('bg-grad-type').addEventListener('change', function() {
+      var isLinear = this.value === 'linear';
+      document.getElementById('angle-label').style.display = isLinear ? '' : 'none';
+      document.getElementById('bg-grad-angle').style.display = isLinear ? '' : 'none';
+      updatePreview();
+    });
+
+    box.addEventListener('input', updatePreview);
+    updatePreview();
+
+    // 删除色标
+    box.addEventListener('click', function(e) {
+      if (e.target.classList.contains('stop-del')) {
+        e.target.closest('.stop-row').remove();
+        updatePreview();
+        // 如果只剩2个，隐藏删除按钮
+        var rows = box.querySelectorAll('.stop-row');
+        if (rows.length <= 2) rows.forEach(function(r) {
+          var d = r.querySelector('.stop-del');
+          if (d) d.style.display = 'none';
+        });
+      }
+    });
+
+    // 添加色标
+    document.getElementById('bg-add-stop').onclick = function() {
+      var list = document.getElementById('stops-list');
+      var i = list.querySelectorAll('.stop-row').length;
+      var row = document.createElement('div');
+      row.className = 'stop-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+      row.dataset.i = i;
+      row.innerHTML = '<input type="color" class="stop-color" value="#ffffff" style="width:36px;height:30px;border:1px solid #ddd;border-radius:4px;padding:2px;cursor:pointer;">'
+        + '<input type="text" class="stop-pos" value="" placeholder="50%" style="width:70px;border:1px solid #ddd;border-radius:4px;padding:5px 8px;font-size:12px;">'
+        + '<button class="stop-del" style="border:none;background:none;color:#e53935;cursor:pointer;font-size:16px;padding:0 4px;">✕</button>';
+      list.appendChild(row);
+      // 显示所有删除按钮
+      list.querySelectorAll('.stop-del').forEach(function(d){ d.style.display = ''; });
+      updatePreview();
+    };
+
+    document.getElementById('bg-cancel').onclick = function() { document.body.removeChild(overlay); };
+    document.getElementById('bg-confirm').onclick = function() {
+      var val = buildGradientValue();
+      applyBgToFrame(data.id, val);
+      document.body.removeChild(overlay);
+    };
+
+  } else {
+    // 纯色
+    var hex = raw.startsWith('#') ? raw.slice(0,7) : rgbToHex(raw);
+    box.innerHTML = `
+      <h3 style="margin-bottom:16px;font-size:15px;">编辑背景颜色</h3>
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;">
+        <input id="bg-color" type="color" value="${hex}" style="width:64px;height:48px;border:1px solid #ddd;border-radius:6px;padding:3px;cursor:pointer;">
+        <div>
+          <div id="bg-color-preview" style="width:120px;height:40px;border-radius:6px;border:1px solid #eee;background:${hex};"></div>
+          <input id="bg-color-hex" type="text" value="${hex}" maxlength="7"
+            style="width:120px;margin-top:6px;border:1px solid #ddd;border-radius:5px;padding:5px 8px;font-size:13px;font-family:monospace;">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="bg-cancel" style="padding:8px 20px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer;font-size:14px;">取消</button>
+        <button id="bg-confirm" style="padding:8px 20px;border:none;border-radius:6px;background:#4285f4;color:#fff;cursor:pointer;font-size:14px;font-weight:500;">确认</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    var colorInput = document.getElementById('bg-color');
+    var hexInput = document.getElementById('bg-color-hex');
+    var preview = document.getElementById('bg-color-preview');
+
+    colorInput.addEventListener('input', function() {
+      hexInput.value = colorInput.value;
+      preview.style.background = colorInput.value;
+    });
+    hexInput.addEventListener('input', function() {
+      if (/^#[0-9a-fA-F]{6}$/.test(hexInput.value)) {
+        colorInput.value = hexInput.value;
+        preview.style.background = hexInput.value;
+      }
+    });
+
+    document.getElementById('bg-cancel').onclick = function() { document.body.removeChild(overlay); };
+    document.getElementById('bg-confirm').onclick = function() {
+      applyBgToFrame(data.id, colorInput.value);
+      document.body.removeChild(overlay);
+    };
+  }
+}
+
+function applyBgToFrame(bgId, value) {
+  var frame = document.getElementById('editor-frame');
+  var el = frame.contentDocument.querySelector('[data-bg-id="' + bgId + '"]');
+  if (!el) return;
+  if (/gradient/i.test(value)) {
+    el.style.background = value;
+    el.style.backgroundColor = '';
+  } else {
+    el.style.backgroundColor = value;
+    if (!/gradient/i.test(el.style.background)) el.style.background = '';
+  }
+}
 
 // ── 链接/按钮编辑弹窗 ──
 function showLinkEditor(data) {
@@ -835,6 +1081,8 @@ function serializeHTML(doc) {
   html = html.replace(/\s*data-overlay-added="[^"]*"/gi, '');
   html = html.replace(/\s*data-link-id="[^"]*"/gi, '');
   html = html.replace(/\s*data-link-overlay-added="[^"]*"/gi, '');
+  html = html.replace(/\s*data-bg-id="[^"]*"/gi, '');
+  html = html.replace(/\s*data-bg-overlay-added="[^"]*"/gi, '');
   // 清理替换按钮覆盖层（wrapper span + 🔄按钮），还原原始 img/video
   html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span style="position:absolute[^"]*"[^>]*>🔄 替换<\/span><\/span>/g, function(_, inner) {
     return inner.trim();
@@ -842,7 +1090,28 @@ function serializeHTML(doc) {
   return html;
 }
 
-// ── 下载全部页面 ──
+// ── 更新原稿（直接覆盖，文件名不变，不询问嵌入方式） ──
+function overwriteOriginal() {
+  if (!isEditing) return;
+  saveCurrentPage();
+  pageStack.forEach(function(page, i) {
+    setTimeout(function() {
+      // 更新原稿：文件夹上传时保持相对路径，单文件保持内嵌
+      var html = isFolderUpload ? restoreRelativePaths(page.html) : page.html;
+      var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = page.filename || ('page_' + (i + 1) + '.html');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }, i * 300);
+  });
+}
+
+// ── 保存副本 ──
+// ── 保存副本 ──
 function downloadHTML() {
   if (!isEditing) return;
   if (isFolderUpload) {
