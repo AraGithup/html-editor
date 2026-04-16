@@ -193,8 +193,6 @@
 <!-- 工具栏 -->
 <div id="toolbar">
   <span class="logo">✏️ HTML 编辑器</span>
-  <button class="btn-upload" onclick="document.getElementById('file-input').click()">上传 HTML</button>
-  <button class="btn-upload" style="background:#6c757d;" onclick="document.getElementById('folder-input').click()">上传文件夹</button>
   <input type="file" id="file-input" accept=".html,.htm" style="display:none">
   <input type="file" id="folder-input" webkitdirectory multiple style="display:none">
 
@@ -255,10 +253,17 @@
 <div id="main">
   <!-- 上传区 -->
   <div id="drop-zone">
-    <div class="drop-box" id="drop-box">
-      <div class="icon">📄</div>
-      <h2>上传 HTML 文件或项目文件夹</h2>
-      <p>点击选择 HTML 文件，或将文件 / 文件夹拖拽到此处</p>
+    <div style="display:flex;gap:24px;align-items:stretch;justify-content:center;">
+      <div class="drop-box" id="drop-box-file" style="flex:1;max-width:280px;cursor:pointer;" onclick="document.getElementById('file-input').click()">
+        <div class="icon">📄</div>
+        <h2>上传 HTML</h2>
+        <p>单个 .html 文件</p>
+      </div>
+      <div class="drop-box" id="drop-box-folder" style="flex:1;max-width:280px;cursor:pointer;" onclick="document.getElementById('folder-input').click()">
+        <div class="icon">📁</div>
+        <h2>上传文件夹</h2>
+        <p>含图片 / 视频等资源</p>
+      </div>
     </div>
   </div>
 
@@ -559,21 +564,25 @@ function showHTMLPicker(htmlFiles) {
 }
 
 // 拖拽上传（支持文件夹）
-var dropBox = document.getElementById('drop-box');
-dropBox.addEventListener('dragover', function(e) {
+var dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', function(e) {
   e.preventDefault();
-  dropBox.classList.add('drag-over');
+  document.getElementById('drop-box-file').classList.add('drag-over');
+  document.getElementById('drop-box-folder').classList.add('drag-over');
 });
-dropBox.addEventListener('dragleave', function() {
-  dropBox.classList.remove('drag-over');
+dropZone.addEventListener('dragleave', function(e) {
+  if (!dropZone.contains(e.relatedTarget)) {
+    document.getElementById('drop-box-file').classList.remove('drag-over');
+    document.getElementById('drop-box-folder').classList.remove('drag-over');
+  }
 });
-dropBox.addEventListener('drop', function(e) {
+dropZone.addEventListener('drop', function(e) {
   e.preventDefault();
-  dropBox.classList.remove('drag-over');
+  document.getElementById('drop-box-file').classList.remove('drag-over');
+  document.getElementById('drop-box-folder').classList.remove('drag-over');
   // 优先处理文件夹（DataTransferItemList API）
   var items = e.dataTransfer.items;
   if (items && items.length) {
-    var entries = [];
     for (var i = 0; i < items.length; i++) {
       var entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
       if (entry && entry.isDirectory) {
@@ -588,11 +597,9 @@ dropBox.addEventListener('drop', function(e) {
   var file = e.dataTransfer.files[0];
   if (file && /\.html?$/i.test(file.name)) {
     assetMap = {};
+    isFolderUpload = false;
     loadHTMLFile(file);
   }
-});
-dropBox.addEventListener('click', function() {
-  document.getElementById('file-input').click();
 });
 
 // 递归读取拖拽文件夹
