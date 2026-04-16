@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HTML 可视化编辑器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #f0f2f5;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── 顶部工具栏 ── */
+  #toolbar {
+    background: #fff;
+    border-bottom: 1px solid #e0e0e0;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  }
+
+  #toolbar .logo {
+    font-weight: 700;
+    font-size: 15px;
+    color: #333;
+    margin-right: 12px;
+    white-space: nowrap;
+  }
+
+  #toolbar .sep {
+    width: 1px;
+    height: 24px;
+    background: #ddd;
+    margin: 0 4px;
+  }
+
+  .tb-btn {
+    border: 1px solid #ddd;
+    background: #fafafa;
+    border-radius: 5px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #333;
+    transition: background .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  .tb-btn:hover { background: #e8f0fe; border-color: #4285f4; color: #4285f4; }
+  .tb-btn.active { background: #e8f0fe; border-color: #4285f4; color: #4285f4; }
+  .tb-btn.icon { font-weight: 700; padding: 4px 8px; min-width: 30px; text-align: center; }
+
+  .tb-label { font-size: 12px; color: #888; white-space: nowrap; }
+
+  #font-size-input {
+    width: 56px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    padding: 4px 6px;
+    font-size: 13px;
+    text-align: center;
+  }
+  #font-size-input:focus { outline: none; border-color: #4285f4; }
+
+  #color-picker {
+    width: 32px;
+    height: 30px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    padding: 2px;
+    cursor: pointer;
+    background: none;
+  }
+
+  #font-family-select {
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    padding: 4px 6px;
+    font-size: 13px;
+    background: #fafafa;
+    cursor: pointer;
+  }
+  #font-family-select:focus { outline: none; border-color: #4285f4; }
+
+  .btn-upload {
+    background: #4285f4;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background .15s;
+  }
+  .btn-upload:hover { background: #3367d6; }
+
+  .btn-download {
+    background: #34a853;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background .15s;
+    margin-left: auto;
+  }
+  .btn-download:hover { background: #2d8f47; }
+  .btn-download:disabled { background: #aaa; cursor: not-allowed; }
+
+  /* ── 警告条 ── */
+  #warning-bar {
+    display: none;
+    background: #fff3cd;
+    border-bottom: 1px solid #ffc107;
+    padding: 6px 16px;
+    font-size: 12px;
+    color: #856404;
+    flex-shrink: 0;
+  }
+
+  /* ── 主区域 ── */
+  #main {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ── 上传区 ── */
+  #drop-zone {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: #f0f2f5;
+  }
+
+  .drop-box {
+    border: 2px dashed #bbb;
+    border-radius: 16px;
+    padding: 60px 80px;
+    text-align: center;
+    background: #fff;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .drop-box:hover, .drop-box.drag-over {
+    border-color: #4285f4;
+    background: #e8f0fe;
+  }
+  .drop-box .icon { font-size: 48px; margin-bottom: 12px; }
+  .drop-box h2 { font-size: 18px; color: #333; margin-bottom: 8px; }
+  .drop-box p { font-size: 13px; color: #888; }
+
+  /* ── 编辑器 iframe ── */
+  #editor-frame {
+    display: none;
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: #fff;
+  }
+
+  /* ── 媒体悬停提示 ── */
+  #media-hint {
+    display: none;
+    position: fixed;
+    background: rgba(0,0,0,.7);
+    color: #fff;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 9999;
+  }
+</style>
+</head>
+<body>
+
+<!-- 工具栏 -->
+<div id="toolbar">
+  <span class="logo">✏️ HTML 编辑器</span>
+  <button class="btn-upload" onclick="document.getElementById('file-input').click()">上传 HTML 文件</button>
+  <input type="file" id="file-input" accept=".html,.htm" style="display:none">
+
+  <div class="sep"></div>
+
+  <button class="tb-btn icon" id="btn-bold" title="加粗 (Ctrl+B)"><b>B</b></button>
+  <button class="tb-btn icon" id="btn-italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+  <button class="tb-btn icon" id="btn-underline" title="下划线 (Ctrl+U)"><u>U</u></button>
+  <button class="tb-btn icon" id="btn-strikethrough" title="删除线"><s>S</s></button>
+
+  <div class="sep"></div>
+
+  <span class="tb-label">字号</span>
+  <input type="number" id="font-size-input" value="16" min="8" max="120" title="字号 (px)">
+  <button class="tb-btn" id="btn-apply-size" title="应用字号">应用</button>
+
+  <div class="sep"></div>
+
+  <span class="tb-label">颜色</span>
+  <input type="color" id="color-picker" value="#000000" title="字体颜色">
+
+  <div class="sep"></div>
+
+  <span class="tb-label">字体</span>
+  <select id="font-family-select">
+    <option value="">默认</option>
+    <option value="Arial, sans-serif">Arial</option>
+    <option value="'Times New Roman', serif">Times New Roman</option>
+    <option value="'Courier New', monospace">Courier New</option>
+    <option value="Georgia, serif">Georgia</option>
+    <option value="Verdana, sans-serif">Verdana</option>
+    <option value="'Microsoft YaHei', '微软雅黑', sans-serif">微软雅黑</option>
+    <option value="'PingFang SC', '苹方', sans-serif">苹方</option>
+    <option value="'Noto Sans SC', sans-serif">Noto Sans SC</option>
+  </select>
+
+  <div class="sep"></div>
+
+  <button class="tb-btn" id="btn-align-left" title="左对齐">≡ 左</button>
+  <button class="tb-btn" id="btn-align-center" title="居中">≡ 中</button>
+  <button class="tb-btn" id="btn-align-right" title="右对齐">≡ 右</button>
+
+  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">下载保存</button>
+</div>
+
+<!-- 警告条 -->
+<div id="warning-bar" id="warning-bar">
+  ⚠️ 检测到外部资源引用（CSS/JS/图片相对路径），这些资源在编辑器中可能无法加载，但不影响编辑和保存。
+</div>
+
+<!-- 主区域 -->
+<div id="main">
+  <!-- 上传区 -->
+  <div id="drop-zone">
+    <div class="drop-box" id="drop-box">
+      <div class="icon">📄</div>
+      <h2>上传 HTML 文件开始编辑</h2>
+      <p>点击此处选择文件，或将 .html 文件拖拽到此处</p>
+    </div>
+  </div>
+
+  <!-- 编辑 iframe -->
+  <iframe id="editor-frame" sandbox="allow-same-origin allow-scripts"></iframe>
+</div>
+
+<!-- 媒体悬停提示 -->
+<div id="media-hint">点击替换图片/视频</div>
+
+<!-- 隐藏文件输入（媒体替换用） -->
+<input type="file" id="media-file-input" style="display:none">
+
+<script>
+// ── 状态 ──
+let currentMediaId = null;
+let currentMediaTag = null;
+let isEditing = false;
+
+// ── 注入到用户 HTML 的编辑脚本 ──
+const INJECT_SCRIPT = `
+<script id="__editor_inject__">
+(function() {
+  // body 设为可编辑
+  document.body.contentEditable = 'true';
+  document.body.spellcheck = false;
+
+  // 给所有媒体元素打 ID
+  var mediaEls = document.querySelectorAll('img, video, source');
+  mediaEls.forEach(function(el, i) {
+    el.dataset.editorId = 'media_' + i;
+  });
+
+  // 拦截链接点击
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest('a');
+    if (a) { e.preventDefault(); }
+  }, true);
+
+  // 媒体点击 → 通知父页面
+  document.addEventListener('click', function(e) {
+    var media = e.target.closest('img, video');
+    if (!media) return;
+    e.preventDefault();
+    e.stopPropagation();
+    window.parent.postMessage({
+      type: 'MEDIA_CLICK',
+      tag: media.tagName,
+      id: media.dataset.editorId
+    }, '*');
+  });
+
+  // 媒体悬停提示
+  document.addEventListener('mouseover', function(e) {
+    var media = e.target.closest('img, video');
+    if (media) {
+      window.parent.postMessage({ type: 'MEDIA_HOVER', show: true }, '*');
+    }
+  });
+  document.addEventListener('mouseout', function(e) {
+    var media = e.target.closest('img, video');
+    if (media) {
+      window.parent.postMessage({ type: 'MEDIA_HOVER', show: false }, '*');
+    }
+  });
+})();
+<\/script>`;
+
+// ── 文件上传 ──
+document.getElementById('file-input').addEventListener('change', function(e) {
+  var file = e.target.files[0];
+  if (file) loadHTMLFile(file);
+  this.value = '';
+});
+
+// 拖拽上传
+var dropBox = document.getElementById('drop-box');
+dropBox.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  dropBox.classList.add('drag-over');
+});
+dropBox.addEventListener('dragleave', function() {
+  dropBox.classList.remove('drag-over');
+});
+dropBox.addEventListener('drop', function(e) {
+  e.preventDefault();
+  dropBox.classList.remove('drag-over');
+  var file = e.dataTransfer.files[0];
+  if (file && (file.name.endsWith('.html') || file.name.endsWith('.htm'))) {
+    loadHTMLFile(file);
+  }
+});
+dropBox.addEventListener('click', function() {
+  document.getElementById('file-input').click();
+});
+
+function loadHTMLFile(file) {
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var html = e.target.result;
+
+    // 检测外部资源
+    var hasExternal = /<link\s[^>]*href=["'][^"'#][^"']*["']/i.test(html) ||
+                      /<script\s[^>]*src=["'][^"'http][^"']*["']/i.test(html);
+    document.getElementById('warning-bar').style.display = hasExternal ? 'block' : 'none';
+
+    // 注入编辑脚本（在 </body> 前，或末尾）
+    if (/<\/body>/i.test(html)) {
+      html = html.replace(/<\/body>/i, INJECT_SCRIPT + '</body>');
+    } else {
+      html = html + INJECT_SCRIPT;
+    }
+
+    var frame = document.getElementById('editor-frame');
+    frame.srcdoc = html;
+    frame.style.display = 'block';
+    document.getElementById('drop-zone').style.display = 'none';
+    document.getElementById('btn-download').disabled = false;
+    isEditing = true;
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+// ── postMessage 接收 ──
+window.addEventListener('message', function(e) {
+  if (e.data.type === 'MEDIA_CLICK') {
+    currentMediaId = e.data.id;
+    currentMediaTag = e.data.tag;
+    var input = document.getElementById('media-file-input');
+    input.accept = (e.data.tag === 'IMG') ? 'image/*' : 'video/*';
+    input.click();
+  } else if (e.data.type === 'MEDIA_HOVER') {
+    document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
+  }
+});
+
+// 鼠标跟随提示
+document.addEventListener('mousemove', function(e) {
+  var hint = document.getElementById('media-hint');
+  hint.style.left = (e.clientX + 12) + 'px';
+  hint.style.top = (e.clientY + 12) + 'px';
+});
+
+// ── 媒体替换 ──
+document.getElementById('media-file-input').addEventListener('change', function(e) {
+  var file = e.target.files[0];
+  if (!file || !currentMediaId) return;
+  var reader = new FileReader();
+  reader.onload = function(ev) {
+    var frame = document.getElementById('editor-frame');
+    var el = frame.contentDocument.querySelector('[data-editor-id="' + currentMediaId + '"]');
+    if (el) {
+      if (el.tagName === 'VIDEO') {
+        el.src = ev.target.result;
+        el.load();
+      } else {
+        el.src = ev.target.result;
+      }
+    }
+    currentMediaId = null;
+  };
+  reader.readAsDataURL(file);
+  this.value = '';
+});
+
+// ── 工具栏操作 ──
+function execInFrame(cmd, value) {
+  if (!isEditing) return;
+  var doc = document.getElementById('editor-frame').contentDocument;
+  doc.execCommand(cmd, false, value || null);
+  doc.getElementById('editor-frame-body') && doc.getElementById('editor-frame-body').focus();
+}
+
+document.getElementById('btn-bold').addEventListener('click', function() {
+  execInFrame('bold');
+  updateToolbarState();
+});
+document.getElementById('btn-italic').addEventListener('click', function() {
+  execInFrame('italic');
+  updateToolbarState();
+});
+document.getElementById('btn-underline').addEventListener('click', function() {
+  execInFrame('underline');
+  updateToolbarState();
+});
+document.getElementById('btn-strikethrough').addEventListener('click', function() {
+  execInFrame('strikeThrough');
+  updateToolbarState();
+});
+
+document.getElementById('btn-align-left').addEventListener('click', function() { execInFrame('justifyLeft'); });
+document.getElementById('btn-align-center').addEventListener('click', function() { execInFrame('justifyCenter'); });
+document.getElementById('btn-align-right').addEventListener('click', function() { execInFrame('justifyRight'); });
+
+// 字体颜色
+document.getElementById('color-picker').addEventListener('input', function(e) {
+  execInFrame('foreColor', e.target.value);
+});
+
+// 字体
+document.getElementById('font-family-select').addEventListener('change', function(e) {
+  if (e.target.value) execInFrame('fontName', e.target.value);
+});
+
+// 字号（px）
+document.getElementById('btn-apply-size').addEventListener('click', applyFontSize);
+document.getElementById('font-size-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') applyFontSize();
+});
+
+function applyFontSize() {
+  if (!isEditing) return;
+  var px = parseInt(document.getElementById('font-size-input').value, 10);
+  if (!px || px < 1) return;
+  var doc = document.getElementById('editor-frame').contentDocument;
+  var sel = doc.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+
+  // 用 fontSize=7 占位，再替换为 inline style
+  doc.execCommand('fontSize', false, '7');
+  doc.querySelectorAll('font[size="7"]').forEach(function(el) {
+    el.removeAttribute('size');
+    el.style.fontSize = px + 'px';
+  });
+}
+
+// ── 工具栏状态同步 ──
+function updateToolbarState() {
+  if (!isEditing) return;
+  var doc = document.getElementById('editor-frame').contentDocument;
+  document.getElementById('btn-bold').classList.toggle('active', doc.queryCommandState('bold'));
+  document.getElementById('btn-italic').classList.toggle('active', doc.queryCommandState('italic'));
+  document.getElementById('btn-underline').classList.toggle('active', doc.queryCommandState('underline'));
+  document.getElementById('btn-strikethrough').classList.toggle('active', doc.queryCommandState('strikeThrough'));
+}
+
+// iframe 加载完成后监听 selectionchange
+document.getElementById('editor-frame').addEventListener('load', function() {
+  var doc = this.contentDocument;
+  if (!doc) return;
+  doc.addEventListener('selectionchange', updateToolbarState);
+  doc.addEventListener('keyup', updateToolbarState);
+});
+
+// ── 下载保存 ──
+function downloadHTML() {
+  if (!isEditing) return;
+  var frame = document.getElementById('editor-frame');
+  var doc = frame.contentDocument;
+  var html = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+
+  // 清理注入的脚本
+  html = html.replace(/<script id="__editor_inject__">[\s\S]*?<\/script>/g, '');
+
+  // 清理 contenteditable 和 data-editor-id
+  html = html.replace(/\s*contenteditable="true"/gi, '');
+  html = html.replace(/\s*spellcheck="false"/gi, '');
+  html = html.replace(/\s*data-editor-id="[^"]*"/gi, '');
+
+  var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'edited.html';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
