@@ -34,17 +34,6 @@
     font-size: 15px;
     color: #333;
     margin-right: 12px;
-  }
-
-  #toolbar .current-file {
-    font-size: 13px;
-    color: #666;
-    margin-right: 12px;
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
     white-space: nowrap;
   }
 
@@ -204,7 +193,6 @@
 <!-- 工具栏 -->
 <div id="toolbar">
   <span class="logo">✏️ HTML 编辑器</span>
-  <span class="current-file" id="current-filename"></span>
   <input type="file" id="file-input" accept=".html,.htm" style="display:none">
   <input type="file" id="folder-input" webkitdirectory multiple style="display:none">
 
@@ -252,8 +240,8 @@
   <button class="tb-btn" id="btn-align-center" title="居中">≡ 中</button>
   <button class="tb-btn" id="btn-align-right" title="右对齐">≡ 右</button>
 
-  <button class="btn-download" id="btn-overwrite" disabled onclick="overwriteOriginal()" style="background:#f4a300;margin-left:auto;">更新原稿</button>
-  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()" style="margin-left:8px;">保存副本</button>
+  <span id="current-filename" style="font-size:13px;color:#666;margin-left:auto;margin-right:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">保存副本</button>
 </div>
 
 <!-- 警告条 -->
@@ -315,7 +303,7 @@ function updateNavButtons() {
 
 function pushPage(html, filename, snapshot) {
   pageStack = pageStack.slice(0, stackIndex + 1);
-  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null, originalHtml: addEids(html), edits: [] });
+  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null });
   stackIndex = pageStack.length - 1;
   updateNavButtons();
 }
@@ -324,19 +312,11 @@ function renderPage(html) {
   var injected = injectEditScript(html);
   var frame = document.getElementById('editor-frame');
   frame.srcdoc = injected;
-  updateFilenameDisplay();
 }
 
 function renderSnapshot(snapshot) {
   var frame = document.getElementById('editor-frame');
   frame.srcdoc = injectEditScript(snapshot);
-  updateFilenameDisplay();
-}
-
-function updateFilenameDisplay() {
-  var entry = pageStack[stackIndex];
-  var el = document.getElementById('current-filename');
-  el.textContent = entry ? entry.filename : '';
 }
 
 // ── 注入到用户 HTML 的编辑脚本 ──
@@ -463,6 +443,7 @@ const INJECT_SCRIPT = `
   });
 
   // ── 页面内状态快照（单页应用前进/返回） ──
+  // 每次按钮/链接点击后，等 JS 执行完再抓快照发给父页面
   document.addEventListener('click', function(e) {
     if (e.target.closest('[data-editor-btn]') || e.target.dataset.editorBtn) return;
     if (_hoverEditEl) return;
@@ -471,38 +452,11 @@ const INJECT_SCRIPT = `
     }, 80);
   }, true);
 
-  // ── 收集用户编辑变化，发给父页面用于保存 ──
-  document.addEventListener('input', function(e) {
-    var sel = window.getSelection();
-    var node = sel && sel.anchorNode;
-    if (!node) return;
-    var el = node.nodeType === 3 ? node.parentElement : node;
-    if (!el) return;
-    // 找最近的有 data-eid 的祖先
-    while (el && !el.dataset.eid) el = el.parentElement;
-    if (!el) return;
-    window.parent.postMessage({
-      type: 'EDIT_CHANGE',
-      eid: el.dataset.eid,
-      innerHTML: el.innerHTML
-    }, '*');
-  }, true);
-
 })();
 <\/script>`;
 
 
-function addEids(html) {
-  var eid = 0;
-  return html.replace(/<([a-zA-Z][a-zA-Z0-9]*)([\s>])/g, function(match, tag, after) {
-    var lower = tag.toLowerCase();
-    if (lower === 'script' || lower === 'style' || lower === 'meta' || lower === 'link' || lower === 'br' || lower === 'hr' || lower === 'img' || lower === 'input') return match;
-    return '<' + tag + ' data-eid="' + (eid++) + '"' + after;
-  });
-}
-
 function injectEditScript(html) {
-  html = addEids(html);
   if (/<\/body>/i.test(html)) {
     return html.replace(/<\/body>/i, INJECT_SCRIPT + '</body>');
   }
@@ -722,7 +676,8 @@ function loadHTMLFile(file) {
     document.getElementById('editor-frame').style.display = 'block';
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('btn-download').disabled = false;
-    document.getElementById('btn-overwrite').disabled = false;
+    var fn = document.getElementById('current-filename');
+    fn.textContent = file.name;
     originalFiles[file.name] = file;
     isEditing = true;
   };
@@ -817,21 +772,9 @@ window.addEventListener('message', function(e) {
     snap = snap.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/i, '');
     // 把当前状态存为新的历史帧（截断前进历史）
     pageStack = pageStack.slice(0, stackIndex + 1);
-    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap, originalHtml: cur.originalHtml, edits: cur.edits ? cur.edits.slice() : [] });
+    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap });
     stackIndex = pageStack.length - 1;
     updateNavButtons();
-  } else if (e.data.type === 'EDIT_CHANGE') {
-    var cur = pageStack[stackIndex];
-    if (!cur) return;
-    if (!cur.edits) cur.edits = [];
-    var found = false;
-    for (var ei = 0; ei < cur.edits.length; ei++) {
-      if (cur.edits[ei].eid === e.data.eid) {
-        cur.edits[ei].innerHTML = e.data.innerHTML;
-        found = true; break;
-      }
-    }
-    if (!found) cur.edits.push({ eid: e.data.eid, innerHTML: e.data.innerHTML });
   }
 });
 
@@ -1005,89 +948,7 @@ function serializeHTML(doc) {
   return html;
 }
 
-// ── 更新原稿（直接覆盖原文件，不支持时降级下载） ──
-async function overwriteOriginal() {
-  if (!isEditing) return;
-  saveCurrentPage();
 
-  var seen = {};
-  var pages = [];
-  for (var i = pageStack.length - 1; i >= 0; i--) {
-    var p = pageStack[i];
-    if (!seen[p.filename]) { seen[p.filename] = true; pages.unshift(p); }
-  }
-
-  var canWrite = !!window.showSaveFilePicker;
-  var saved = 0, failed = 0;
-
-  for (var j = 0; j < pages.length; j++) {
-    var page = pages[j];
-    // 用原始 HTML 作为基础，把编辑内容 patch 进去
-    var edits = page.edits || [];
-    var baseHtml = edits.length > 0 ? applyEditsToOriginal(page.originalHtml, edits) : page.originalHtml;
-    var html = isFolderUpload ? restoreRelativePaths(baseHtml) : baseHtml;
-    var handle = fileHandles[page.filename];
-
-    if (canWrite && handle) {
-      try {
-        var writable = await handle.createWritable();
-        await writable.write(html);
-        await writable.close();
-        saved++;
-        continue;
-      } catch (e) { /* 权限被拒，降级 */ }
-    }
-
-    (function(h, fn) {
-      var blob = new Blob([h], { type: 'text/html;charset=utf-8' });
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = fn;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-      failed++;
-    })(html, page.filename);
-  }
-
-  if (saved > 0 && failed === 0) {
-    var btn = document.getElementById('btn-overwrite');
-    var orig = btn.textContent;
-    btn.textContent = '✓ 已保存';
-    btn.disabled = true;
-    setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 1000);
-  }
-}
-
-// 把收集到的编辑变化 patch 到 originalHtml 上
-function applyEditsToOriginal(originalHtml, edits) {
-  if (!edits || edits.length === 0) return originalHtml;
-  var parser = new DOMParser();
-  var origDoc = parser.parseFromString(originalHtml, 'text/html');
-
-  edits.forEach(function(edit) {
-    var el = origDoc.querySelector('[data-eid="' + edit.eid + '"]');
-    if (!el) return;
-    // innerHTML 里可能含有编辑器注入的覆盖层，需要清理
-    var tmp = parser.parseFromString('<div>' + edit.innerHTML + '</div>', 'text/html');
-    // 移除编辑器注入的 span 覆盖层
-    tmp.querySelectorAll('span[style*="position:absolute"]').forEach(function(s) { s.remove(); });
-    tmp.querySelectorAll('span[style*="position:relative"]').forEach(function(wrapper) {
-      // 把 wrapper 里的真实内容（img/video/a/button）提取出来
-      var inner = wrapper.querySelector('img, video, a, button');
-      if (inner) wrapper.replaceWith(inner);
-    });
-    el.innerHTML = tmp.querySelector('div').innerHTML;
-  });
-
-  // 清理 data-eid 属性
-  origDoc.querySelectorAll('[data-eid]').forEach(function(el) { el.removeAttribute('data-eid'); });
-
-  return '<!DOCTYPE html>\n' + origDoc.documentElement.outerHTML;
-}
-
-// ── 保存副本 ──
 // ── 保存副本 ──
 function downloadHTML() {
   if (!isEditing) return;
