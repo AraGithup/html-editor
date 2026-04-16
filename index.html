@@ -361,26 +361,27 @@ const INJECT_SCRIPT = `
     if (_hoverEditEl === el) clearHoverEdit(el);
   }, true);
 
-  // click 拦截：hover 编辑模式下只编辑，否则触发跳转
+  // click 拦截：hover 编辑模式下只编辑，否则正常执行
   document.addEventListener('click', function(e) {
     var a = e.target.closest('a');
     if (a && !a.dataset.editorBtn) {
       e.preventDefault();
       if (_hoverEditEl !== a) {
-        // 非编辑模式 → 触发导航
         var href = a.getAttribute('href');
         if (href && href !== '#' && !href.startsWith('javascript')) {
           window.parent.postMessage({ type: 'NAVIGATE', href: href }, '*');
         }
       }
-      // 编辑模式下什么都不做，让 contentEditable 自然获焦
       return;
     }
     var btn = e.target.closest('button');
     if (btn && !btn.dataset.editorBtn) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      // 编辑模式（hover 800ms）下不做任何事，让 contentEditable 获焦
+      if (_hoverEditEl === btn) {
+        // hover 编辑模式：阻止 onclick，只编辑文字
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+      // 非编辑模式：不拦截，让 onclick 正常执行
     }
   }, true);
 
