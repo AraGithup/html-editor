@@ -241,7 +241,7 @@
   <button class="tb-btn" id="btn-align-center" title="居中">≡ 中</button>
   <button class="tb-btn" id="btn-align-right" title="右对齐">≡ 右</button>
 
-  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">下载保存</button>
+  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">下载全部页面</button>
 </div>
 
 <!-- 警告条 -->
@@ -599,19 +599,23 @@ function serializeHTML(doc) {
   return html;
 }
 
-// ── 下载保存 ──
+// ── 下载全部页面 ──
 function downloadHTML() {
   if (!isEditing) return;
   saveCurrentPage();
-  var html = pageStack[stackIndex].html;
-  var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (pageStack[stackIndex].filename) || 'edited.html';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(a.href);
+  // 逐个下载，间隔 300ms 避免浏览器拦截
+  pageStack.forEach(function(page, i) {
+    setTimeout(function() {
+      var blob = new Blob([page.html], { type: 'text/html;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = page.filename || ('page_' + (i + 1) + '.html');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }, i * 300);
+  });
 }
 </script>
 </body>
