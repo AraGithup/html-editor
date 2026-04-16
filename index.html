@@ -194,8 +194,7 @@
 <!-- 工具栏 -->
 <div id="toolbar">
   <span class="logo">✏️ HTML 编辑器</span>
-  <button class="btn-upload" id="btn-upload-folder" onclick="document.getElementById('folder-input').click()">📁 上传文件夹</button>
-  <button class="btn-upload" style="background:#6c757d;" onclick="document.getElementById('file-input').click()">📄 仅上传 HTML</button>
+  <button class="btn-upload" onclick="showUploadPicker()">上传文件 / 文件夹</button>
   <input type="file" id="file-input" accept=".html,.htm" style="display:none">
   <input type="file" id="folder-input" webkitdirectory multiple style="display:none">
 
@@ -257,10 +256,9 @@
   <!-- 上传区 -->
   <div id="drop-zone">
     <div class="drop-box" id="drop-box">
-      <div class="icon">📁</div>
-      <h2>上传项目文件夹开始编辑</h2>
-      <p>点击选择文件夹，或拖拽文件夹到此处</p>
-      <p style="margin-top:8px;font-size:12px;color:#aaa;">只有单个 HTML 文件？点工具栏"仅上传 HTML"</p>
+      <div class="icon">📄</div>
+      <h2>上传 HTML 文件或项目文件夹</h2>
+      <p>点击选择，或将文件 / 文件夹拖拽到此处</p>
     </div>
   </div>
 
@@ -458,6 +456,37 @@ function injectEditScript(html) {
   return html + INJECT_SCRIPT;
 }
 
+// ── 上传选择器 ──
+function showUploadPicker() {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;padding:28px;display:flex;gap:16px;';
+
+  function makeBtn(icon, label, desc, fn) {
+    var b = document.createElement('button');
+    b.style.cssText = 'width:160px;padding:20px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa;cursor:pointer;text-align:center;transition:border-color .15s,background .15s;';
+    b.innerHTML = '<div style="font-size:36px;margin-bottom:8px;">'+icon+'</div>'
+      + '<div style="font-size:14px;font-weight:600;margin-bottom:4px;">'+label+'</div>'
+      + '<div style="font-size:12px;color:#888;">'+desc+'</div>';
+    b.onmouseover = function(){ b.style.borderColor='#4285f4'; b.style.background='#e8f0fe'; };
+    b.onmouseout  = function(){ b.style.borderColor='#ddd';    b.style.background='#fafafa'; };
+    b.onclick = function(){ document.body.removeChild(overlay); fn(); };
+    return b;
+  }
+
+  box.appendChild(makeBtn('📄', '单个 HTML', '仅上传一个 .html 文件', function(){
+    document.getElementById('file-input').click();
+  }));
+  box.appendChild(makeBtn('📁', '项目文件夹', '含图片/视频等资源', function(){
+    document.getElementById('folder-input').click();
+  }));
+
+  overlay.appendChild(box);
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) document.body.removeChild(overlay); });
+  document.body.appendChild(overlay);
+}
+
 // ── 文件上传（单 HTML） ──
 document.getElementById('file-input').addEventListener('change', function(e) {
   var file = e.target.files[0];
@@ -572,7 +601,7 @@ dropBox.addEventListener('drop', function(e) {
   }
 });
 dropBox.addEventListener('click', function() {
-  document.getElementById('folder-input').click();
+  showUploadPicker();
 });
 
 // 递归读取拖拽文件夹
