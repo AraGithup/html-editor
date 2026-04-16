@@ -194,8 +194,10 @@
 <!-- 工具栏 -->
 <div id="toolbar">
   <span class="logo">✏️ HTML 编辑器</span>
-  <button class="btn-upload" onclick="document.getElementById('file-input').click()">上传 HTML 文件</button>
+  <button class="btn-upload" id="btn-upload-folder" onclick="document.getElementById('folder-input').click()">📁 上传文件夹</button>
+  <button class="btn-upload" style="background:#6c757d;" onclick="document.getElementById('file-input').click()">📄 仅上传 HTML</button>
   <input type="file" id="file-input" accept=".html,.htm" style="display:none">
+  <input type="file" id="folder-input" webkitdirectory multiple style="display:none">
 
   <div class="sep"></div>
 
@@ -254,9 +256,10 @@
   <!-- 上传区 -->
   <div id="drop-zone">
     <div class="drop-box" id="drop-box">
-      <div class="icon">📄</div>
-      <h2>上传 HTML 文件开始编辑</h2>
-      <p>点击此处选择文件，或将 .html 文件拖拽到此处</p>
+      <div class="icon">📁</div>
+      <h2>上传项目文件夹开始编辑</h2>
+      <p>点击选择文件夹，或拖拽文件夹到此处</p>
+      <p style="margin-top:8px;font-size:12px;color:#aaa;">只有单个 HTML 文件？点工具栏"仅上传 HTML"</p>
     </div>
   </div>
 
@@ -275,6 +278,7 @@
 let currentMediaId = null;
 let currentMediaTag = null;
 let isEditing = false;
+let assetMap = {};  // 文件名/相对路径 → base64 data URL
 
 // ── 页面历史栈（存储每页的 HTML 字符串） ──
 let pageStack = [];   // [{html, filename}]
@@ -372,14 +376,85 @@ function injectEditScript(html) {
   return html + INJECT_SCRIPT;
 }
 
-// ── 文件上传 ──
+// ── 文件上传（单 HTML） ──
 document.getElementById('file-input').addEventListener('change', function(e) {
   var file = e.target.files[0];
-  if (file) loadHTMLFile(file);
+  if (file) {
+    assetMap = {};
+    loadHTMLFile(file);
+  }
   this.value = '';
 });
 
-// 拖拽上传
+// ── 文件夹上传 ──
+document.getElementById('folder-input').addEventListener('change', function(e) {
+  var files = Array.from(e.target.files);
+  if (!files.length) return;
+  this.value = '';
+
+  // 先把所有非 HTML 文件读成 base64 存入 assetMap
+  var nonHtml = files.filter(function(f) { return !/\.html?$/i.test(f.name); });
+  var htmlFiles = files.filter(function(f) { return /\.html?$/i.test(f.name); });
+
+  if (!htmlFiles.length) { alert('文件夹中没有找到 HTML 文件'); return; }
+
+  assetMap = {};
+  var pending = nonHtml.length;
+
+  function onAssetsReady() {
+    if (htmlFiles.length === 1) {
+      loadHTMLFile(htmlFiles[0]);
+    } else {
+      // 多个 HTML，让用户选择入口文件
+      showHTMLPicker(htmlFiles);
+    }
+  }
+
+  if (pending === 0) { onAssetsReady(); return; }
+
+  nonHtml.forEach(function(file) {
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      // 用文件名和相对路径两种 key 都存一份，方便匹配
+      var key = file.webkitRelativePath
+        ? file.webkitRelativePath.split('/').slice(1).join('/')  // 去掉根文件夹名
+        : file.name;
+      assetMap[key] = ev.target.result;
+      assetMap[file.name] = ev.target.result;  // 仅文件名也能匹配
+      pending--;
+      if (pending === 0) onAssetsReady();
+    };
+    reader.readAsDataURL(file);
+  });
+});
+
+// 多 HTML 文件时弹出选择器
+function showHTMLPicker(htmlFiles) {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;padding:32px;min-width:320px;max-width:480px;';
+  box.innerHTML = '<h3 style="margin-bottom:16px;font-size:16px;">选择要编辑的 HTML 文件</h3>';
+  htmlFiles.forEach(function(file) {
+    var btn = document.createElement('button');
+    var relPath = file.webkitRelativePath
+      ? file.webkitRelativePath.split('/').slice(1).join('/')
+      : file.name;
+    btn.textContent = relPath;
+    btn.style.cssText = 'display:block;width:100%;text-align:left;padding:10px 14px;margin-bottom:8px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer;font-size:14px;';
+    btn.onmouseover = function() { btn.style.background = '#e8f0fe'; btn.style.borderColor = '#4285f4'; };
+    btn.onmouseout = function() { btn.style.background = '#fafafa'; btn.style.borderColor = '#ddd'; };
+    btn.onclick = function() {
+      document.body.removeChild(overlay);
+      loadHTMLFile(file);
+    };
+    box.appendChild(btn);
+  });
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+}
+
+// 拖拽上传（支持文件夹）
 var dropBox = document.getElementById('drop-box');
 dropBox.addEventListener('dragover', function(e) {
   e.preventDefault();
@@ -391,19 +466,90 @@ dropBox.addEventListener('dragleave', function() {
 dropBox.addEventListener('drop', function(e) {
   e.preventDefault();
   dropBox.classList.remove('drag-over');
+  // 优先处理文件夹（DataTransferItemList API）
+  var items = e.dataTransfer.items;
+  if (items && items.length) {
+    var entries = [];
+    for (var i = 0; i < items.length; i++) {
+      var entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+      if (entry && entry.isDirectory) {
+        readDirectory(entry, function(files) {
+          simulateFolderUpload(files);
+        });
+        return;
+      }
+    }
+  }
+  // 单文件拖拽
   var file = e.dataTransfer.files[0];
-  if (file && (file.name.endsWith('.html') || file.name.endsWith('.htm'))) {
+  if (file && /\.html?$/i.test(file.name)) {
+    assetMap = {};
     loadHTMLFile(file);
   }
 });
 dropBox.addEventListener('click', function() {
-  document.getElementById('file-input').click();
+  document.getElementById('folder-input').click();
 });
+
+// 递归读取拖拽文件夹
+function readDirectory(dirEntry, callback) {
+  var files = [];
+  var reader = dirEntry.createReader();
+  function readEntries() {
+    reader.readEntries(function(entries) {
+      if (!entries.length) { callback(files); return; }
+      var pending = entries.length;
+      entries.forEach(function(entry) {
+        if (entry.isFile) {
+          entry.file(function(f) {
+            // 附加相对路径信息
+            f._relativePath = entry.fullPath.replace(/^\/[^/]+\//, '');
+            files.push(f);
+            if (--pending === 0) readEntries();
+          });
+        } else if (entry.isDirectory) {
+          readDirectory(entry, function(subFiles) {
+            files = files.concat(subFiles);
+            if (--pending === 0) readEntries();
+          });
+        } else {
+          if (--pending === 0) readEntries();
+        }
+      });
+    });
+  }
+  readEntries();
+}
+
+function simulateFolderUpload(files) {
+  var nonHtml = files.filter(function(f) { return !/\.html?$/i.test(f.name); });
+  var htmlFiles = files.filter(function(f) { return /\.html?$/i.test(f.name); });
+  if (!htmlFiles.length) { alert('文件夹中没有找到 HTML 文件'); return; }
+  assetMap = {};
+  var pending = nonHtml.length;
+  function onReady() {
+    if (htmlFiles.length === 1) loadHTMLFile(htmlFiles[0]);
+    else showHTMLPicker(htmlFiles);
+  }
+  if (!pending) { onReady(); return; }
+  nonHtml.forEach(function(file) {
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var key = file._relativePath || file.name;
+      assetMap[key] = ev.target.result;
+      assetMap[file.name] = ev.target.result;
+      if (--pending === 0) onReady();
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 function loadHTMLFile(file) {
   var reader = new FileReader();
   reader.onload = function(e) {
     var html = e.target.result;
+    // 把 HTML 中的相对路径资源替换为 base64
+    html = inlineAssets(html);
     checkExternalResources(html);
     pageStack = [];
     stackIndex = -1;
@@ -415,6 +561,19 @@ function loadHTMLFile(file) {
     isEditing = true;
   };
   reader.readAsText(file, 'UTF-8');
+}
+
+// 把 HTML 中相对路径的 src/href 替换为 assetMap 中的 base64
+function inlineAssets(html) {
+  if (!Object.keys(assetMap).length) return html;
+  // 替换 src="..." 和 href="..."（跳过 http/https/data:/# 开头的）
+  return html.replace(/(src|href)=["']([^"']+)["']/gi, function(match, attr, val) {
+    if (/^(https?:|data:|#|javascript)/i.test(val)) return match;
+    // 尝试匹配：完整相对路径 或 仅文件名
+    var base64 = assetMap[val] || assetMap[val.split('/').pop()];
+    if (base64) return attr + '="' + base64 + '"';
+    return match;
+  });
 }
 
 function checkExternalResources(html) {
