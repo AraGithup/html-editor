@@ -291,8 +291,34 @@ const INJECT_SCRIPT = `
     if (a) { e.preventDefault(); }
   }, true);
 
-  // 媒体点击 → 通知父页面
-  document.addEventListener('click', function(e) {
+  // 给图片/视频加替换按钮覆盖层
+  function addMediaOverlay(el) {
+    if (el.dataset.overlayAdded) return;
+    el.dataset.overlayAdded = '1';
+    var wrapper = document.createElement('span');
+    wrapper.style.cssText = 'position:relative;display:inline-block;';
+    el.parentNode.insertBefore(wrapper, el);
+    wrapper.appendChild(el);
+    var btn = document.createElement('span');
+    btn.textContent = '🔄 替换';
+    btn.style.cssText = 'position:absolute;top:6px;left:6px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:3px 8px;border-radius:4px;cursor:pointer;z-index:9999;user-select:none;pointer-events:auto;';
+    btn.contentEditable = 'false';
+    btn.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      window.parent.postMessage({
+        type: 'MEDIA_CLICK',
+        tag: el.tagName,
+        id: el.dataset.editorId
+      }, '*');
+    });
+    wrapper.appendChild(btn);
+  }
+
+  document.querySelectorAll('img, video').forEach(addMediaOverlay);
+
+  // 双击也可触发替换（兜底）
+  document.addEventListener('dblclick', function(e) {
     var media = e.target.closest('img, video');
     if (!media) return;
     e.preventDefault();
@@ -302,20 +328,6 @@ const INJECT_SCRIPT = `
       tag: media.tagName,
       id: media.dataset.editorId
     }, '*');
-  });
-
-  // 媒体悬停提示
-  document.addEventListener('mouseover', function(e) {
-    var media = e.target.closest('img, video');
-    if (media) {
-      window.parent.postMessage({ type: 'MEDIA_HOVER', show: true }, '*');
-    }
-  });
-  document.addEventListener('mouseout', function(e) {
-    var media = e.target.closest('img, video');
-    if (media) {
-      window.parent.postMessage({ type: 'MEDIA_HOVER', show: false }, '*');
-    }
   });
 })();
 <\/script>`;
