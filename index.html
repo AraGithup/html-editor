@@ -317,16 +317,32 @@ const INJECT_SCRIPT = `
     el.dataset.editorId = 'media_' + i;
   });
 
-  // 拦截链接点击 → 通知父页面导航
-  document.addEventListener('click', function(e) {
+  // 拦截链接点击 → 长按才触发导航，普通点击只编辑文字
+  var _pressTimer = null;
+  document.addEventListener('mousedown', function(e) {
     var a = e.target.closest('a');
     if (!a) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var href = a.getAttribute('href');
-    if (href && href !== '#' && !href.startsWith('javascript')) {
-      window.parent.postMessage({ type: 'NAVIGATE', href: href }, '*');
-    }
+    _pressTimer = setTimeout(function() {
+      _pressTimer = null;
+      var href = a.getAttribute('href');
+      if (href && href !== '#' && !href.startsWith('javascript')) {
+        window.parent.postMessage({ type: 'NAVIGATE', href: href }, '*');
+      }
+    }, 500);
+  }, true);
+  document.addEventListener('mouseup', function() {
+    if (_pressTimer) { clearTimeout(_pressTimer); _pressTimer = null; }
+  }, true);
+  // 阻止 <a> 的默认跳转，但不阻止 contentEditable 焦点
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest('a');
+    if (a) { e.preventDefault(); }
+  }, true);
+
+  // 阻止 <button> 的 onclick 执行（编辑模式下不应触发）
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('button');
+    if (btn && !btn.dataset.editorBtn) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
 
   // 给图片/视频加替换按钮覆盖层
@@ -367,6 +383,7 @@ const INJECT_SCRIPT = `
     btn.textContent = '🔗 编辑链接';
     btn.style.cssText = 'position:absolute;top:-22px;left:0;background:rgba(66,133,244,.9);color:#fff;font-size:11px;padding:2px 7px;border-radius:4px;cursor:pointer;z-index:9999;user-select:none;pointer-events:auto;white-space:nowrap;';
     btn.contentEditable = 'false';
+    btn.dataset.editorBtn = '1';
     btn.addEventListener('mousedown', function(e) {
       e.preventDefault();
       e.stopPropagation();
