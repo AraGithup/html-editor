@@ -463,13 +463,49 @@ const INJECT_SCRIPT = `
   });
 
   // ── 页面内状态快照（单页应用前进/返回） ──
-  // 每次按钮/链接点击后，等 JS 执行完再抓快照发给父页面
   document.addEventListener('click', function(e) {
     if (e.target.closest('[data-editor-btn]') || e.target.dataset.editorBtn) return;
     if (_hoverEditEl) return;
     setTimeout(function() {
       window.parent.postMessage({ type: 'DOM_SNAPSHOT', html: document.documentElement.outerHTML }, '*');
     }, 80);
+  }, true);
+
+  // ── 收集用户编辑变化，发给父页面用于保存 ──
+  function getXPath(el) {
+    if (el.nodeType === 3) {
+      // 文本节点：找它是父元素的第几个文本节点
+      var parent = el.parentElement;
+      var idx = 0;
+      parent.childNodes.forEach(function(n) { if (n === el) return; if (n.nodeType === 3) idx++; });
+      return getXPath(parent) + '/text()[' + (idx + 1) + ']';
+    }
+    var path = '';
+    while (el && el.nodeType === 1 && el !== document.documentElement) {
+      var tag = el.tagName.toLowerCase();
+      var siblings = Array.prototype.filter.call(el.parentElement.children, function(c) { return c.tagName === el.tagName; });
+      var pos = siblings.indexOf(el) + 1;
+      path = '/' + tag + '[' + pos + ']' + path;
+      el = el.parentElement;
+    }
+    return '/html' + path;
+  }
+
+  document.addEventListener('input', function(e) {
+    var target = e.target;
+    // 找到被编辑的文本节点所在元素
+    var sel = window.getSelection();
+    if (sel && sel.anchorNode && sel.anchorNode.nodeType === 3) {
+      var textNode = sel.anchorNode;
+      var parent = textNode.parentElement;
+      if (!parent) return;
+      var xpath = getXPath(parent);
+      window.parent.postMessage({
+        type: 'EDIT_CHANGE',
+        xpath: xpath,
+        innerHTML: parent.innerHTML
+      }, '*');
+    }
   }, true);
 
 })();
@@ -791,9 +827,22 @@ window.addEventListener('message', function(e) {
     snap = snap.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/i, '');
     // 把当前状态存为新的历史帧（截断前进历史）
     pageStack = pageStack.slice(0, stackIndex + 1);
-    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap });
+    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap, originalHtml: cur.originalHtml, edits: cur.edits ? cur.edits.slice() : [] });
     stackIndex = pageStack.length - 1;
     updateNavButtons();
+  } else if (e.data.type === 'EDIT_CHANGE') {
+    var cur = pageStack[stackIndex];
+    if (!cur) return;
+    if (!cur.edits) cur.edits = [];
+    // 更新或追加（同一 xpath 只保留最新值）
+    var found = false;
+    for (var ei = 0; ei < cur.edits.length; ei++) {
+      if (cur.edits[ei].xpath === e.data.xpath && cur.edits[ei].type === 'innerHTML') {
+        cur.edits[ei].innerHTML = e.data.innerHTML;
+        found = true; break;
+      }
+    }
+    if (!found) cur.edits.push({ type: 'innerHTML', xpath: e.data.xpath, innerHTML: e.data.innerHTML });
   }
 });
 
@@ -985,7 +1034,8 @@ async function overwriteOriginal() {
   for (var j = 0; j < pages.length; j++) {
     var page = pages[j];
     // 用原始 HTML 作为基础，把编辑内容 patch 进去
-    var baseHtml = page.editedHtml ? applyEditsToOriginal(page.originalHtml, page.editedHtml) : page.originalHtml;
+    var edits = page.edits || [];
+    var baseHtml = edits.length > 0 ? applyEditsToOriginal(page.originalHtml, edits) : page.originalHtml;
     var html = isFolderUpload ? restoreRelativePaths(baseHtml) : baseHtml;
     var handle = fileHandles[page.filename];
 
@@ -1021,57 +1071,21 @@ async function overwriteOriginal() {
   }
 }
 
-// 把 editedHtml 里用户编辑的内容（文字、属性）patch 到 originalHtml 上
-// 策略：用 originalHtml 的 DOM 结构，逐个元素对比 editedHtml，替换文字和属性
-function applyEditsToOriginal(originalHtml, editedHtml) {
+// 把收集到的编辑变化 patch 到 originalHtml 上
+function applyEditsToOriginal(originalHtml, edits) {
+  if (!edits || edits.length === 0) return originalHtml;
   var parser = new DOMParser();
   var origDoc = parser.parseFromString(originalHtml, 'text/html');
-  var editDoc = parser.parseFromString(editedHtml, 'text/html');
 
-  // 给两个 DOM 的所有元素按 DOM 路径对比，把 editedDoc 里的文字/属性变化写回 origDoc
-  function getPath(el) {
-    var path = [];
-    while (el && el.parentElement) {
-      var idx = Array.prototype.indexOf.call(el.parentElement.children, el);
-      path.unshift(el.tagName + ':' + idx);
-      el = el.parentElement;
-    }
-    return path.join('>');
-  }
-
-  // 建立 origDoc 的路径→元素映射
-  var origMap = {};
-  origDoc.querySelectorAll('*').forEach(function(el) { origMap[getPath(el)] = el; });
-
-  // 遍历 editDoc，把变化 patch 到 origDoc
-  editDoc.querySelectorAll('*').forEach(function(editEl) {
-    var path = getPath(editEl);
-    var origEl = origMap[path];
-    if (!origEl) return;
-
-    // 同步文字内容（只对叶子节点或文字为主的元素）
-    if (editEl.children.length === 0 && origEl.children.length === 0) {
-      if (editEl.innerHTML !== origEl.innerHTML) {
-        origEl.innerHTML = editEl.innerHTML;
+  edits.forEach(function(edit) {
+    try {
+      var result = origDoc.evaluate(edit.xpath, origDoc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      var el = result.singleNodeValue;
+      if (!el) return;
+      if (edit.type === 'innerHTML') {
+        el.innerHTML = edit.innerHTML;
       }
-    } else if (editEl.childNodes.length > 0) {
-      // 同步直接文本节点
-      var editTexts = [], origTexts = [];
-      editEl.childNodes.forEach(function(n) { if (n.nodeType === 3) editTexts.push(n); });
-      origEl.childNodes.forEach(function(n) { if (n.nodeType === 3) origTexts.push(n); });
-      for (var k = 0; k < Math.min(editTexts.length, origTexts.length); k++) {
-        if (editTexts[k].textContent !== origTexts[k].textContent) {
-          origTexts[k].textContent = editTexts[k].textContent;
-        }
-      }
-    }
-
-    // 同步 href / onclick / style（背景色编辑）
-    ['href', 'onclick', 'style', 'src'].forEach(function(attr) {
-      var ev = editEl.getAttribute(attr);
-      var ov = origEl.getAttribute(attr);
-      if (ev !== null && ev !== ov) origEl.setAttribute(attr, ev);
-    });
+    } catch(e) {}
   });
 
   return '<!DOCTYPE html>\n' + origDoc.documentElement.outerHTML;
