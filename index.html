@@ -200,6 +200,7 @@
 
   <button class="tb-btn icon" id="btn-back" title="返回上一页" disabled>◀</button>
   <button class="tb-btn icon" id="btn-forward" title="前进下一页" disabled>▶</button>
+  <button class="tb-btn icon" id="btn-undo" title="撤销 (Ctrl+Z)" disabled>↩</button>
 
   <div class="sep"></div>
 
@@ -289,19 +290,21 @@ let fileHandles = {};     // filename → FileSystemFileHandle（File System Acc
 let dirHandle = null;     // FileSystemDirectoryHandle（文件夹上传时）
 let allPages = {};       // filename → html 字符串（文件夹上传时所有 HTML）
 
-// ── 页面历史栈（存储每页的 HTML 字符串） ──
-let pageStack = [];   // [{html, filename}]
-let stackIndex = -1;  // 当前位置
+// ── 页面历史栈 ──
+// 每条记录：{html, filename, snapshot}
+// html = 原始 HTML（用于跨文件跳转）
+// snapshot = 点击后的 DOM 快照（用于单页应用内状态）
+let pageStack = [];
+let stackIndex = -1;
 
 function updateNavButtons() {
   document.getElementById('btn-back').disabled = stackIndex <= 0;
   document.getElementById('btn-forward').disabled = stackIndex >= pageStack.length - 1;
 }
 
-function pushPage(html, filename) {
-  // 截断前进历史
+function pushPage(html, filename, snapshot) {
   pageStack = pageStack.slice(0, stackIndex + 1);
-  pageStack.push({ html, filename });
+  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null });
   stackIndex = pageStack.length - 1;
   updateNavButtons();
 }
@@ -310,6 +313,12 @@ function renderPage(html) {
   var injected = injectEditScript(html);
   var frame = document.getElementById('editor-frame');
   frame.srcdoc = injected;
+}
+
+function renderSnapshot(snapshot, filename) {
+  // 快照已经是注入过脚本的 DOM，直接渲染
+  var frame = document.getElementById('editor-frame');
+  frame.srcdoc = snapshot;
 }
 
 // ── 注入到用户 HTML 的编辑脚本 ──
@@ -444,8 +453,58 @@ const INJECT_SCRIPT = `
     addLinkOverlay(el);
   });
 
-  // 双击也可触发替换（兜底）
-  document.addEventListener('dblclick', function(e) {
+  // ── 编辑撤销历史（最多10步） ──
+  var _editHistory = [];
+  var _editIndex = -1;
+  var _undoTimer = null;
+
+  function snapshotForUndo() {
+    var snap = document.documentElement.outerHTML;
+    // 截断前进历史
+    _editHistory = _editHistory.slice(0, _editIndex + 1);
+    // 避免重复
+    if (_editHistory[_editIndex] === snap) return;
+    _editHistory.push(snap);
+    if (_editHistory.length > 10) _editHistory.shift();
+    _editIndex = _editHistory.length - 1;
+    window.parent.postMessage({ type: 'UNDO_STATE', canUndo: _editIndex > 0 }, '*');
+  }
+
+  // 初始快照
+  setTimeout(function() {
+    _editHistory = [document.documentElement.outerHTML];
+    _editIndex = 0;
+  }, 100);
+
+  // 监听文字编辑
+  document.addEventListener('input', function() {
+    clearTimeout(_undoTimer);
+    _undoTimer = setTimeout(snapshotForUndo, 400);
+  }, true);
+
+  // 接收撤销指令
+  window.addEventListener('message', function(e) {
+    if (e.data.type === 'DO_UNDO') {
+      if (_editIndex <= 0) return;
+      _editIndex--;
+      var snap = _editHistory[_editIndex];
+      document.open(); document.write(snap); document.close();
+      window.parent.postMessage({ type: 'UNDO_STATE', canUndo: _editIndex > 0 }, '*');
+    }
+  });
+
+
+  // 每次点击非编辑器按钮后，延迟捕获 DOM 快照发给父页面
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('[data-editor-btn]') || e.target.dataset.editorBtn) return;
+    if (_hoverEditEl) return; // 编辑模式下的点击不记录状态
+    setTimeout(function() {
+      window.parent.postMessage({
+        type: 'DOM_SNAPSHOT',
+        html: document.documentElement.outerHTML
+      }, '*');
+    }, 80);
+  }, true);
     var media = e.target.closest('img, video');
     if (!media) return;
     e.preventDefault();
@@ -705,13 +764,14 @@ function checkExternalResources(html) {
   document.getElementById('warning-bar').style.display = hasExternal ? 'block' : 'none';
 }
 
-// ── 前进/后退 ──
+// ── 前进/后退/撤销 ──
 document.getElementById('btn-back').addEventListener('click', function() {
   if (stackIndex <= 0) return;
-  // 保存当前页编辑内容
   saveCurrentPage();
   stackIndex--;
-  renderPage(pageStack[stackIndex].html);
+  var entry = pageStack[stackIndex];
+  if (entry.snapshot) renderSnapshot(entry.snapshot);
+  else renderPage(entry.html);
   updateNavButtons();
 });
 
@@ -719,8 +779,28 @@ document.getElementById('btn-forward').addEventListener('click', function() {
   if (stackIndex >= pageStack.length - 1) return;
   saveCurrentPage();
   stackIndex++;
-  renderPage(pageStack[stackIndex].html);
+  var entry = pageStack[stackIndex];
+  if (entry.snapshot) renderSnapshot(entry.snapshot);
+  else renderPage(entry.html);
   updateNavButtons();
+});
+
+document.getElementById('btn-undo').addEventListener('click', function() {
+  var frame = document.getElementById('editor-frame');
+  if (frame.contentWindow) {
+    frame.contentWindow.postMessage({ type: 'DO_UNDO' }, '*');
+  }
+});
+
+// Ctrl+Z 全局撤销
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    var frame = document.getElementById('editor-frame');
+    if (frame.contentWindow) {
+      e.preventDefault();
+      frame.contentWindow.postMessage({ type: 'DO_UNDO' }, '*');
+    }
+  }
 });
 
 // 保存当前 iframe 内容到历史栈
@@ -762,6 +842,16 @@ window.addEventListener('message', function(e) {
     }
   } else if (e.data.type === 'MEDIA_HOVER') {
     document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
+  } else if (e.data.type === 'DOM_SNAPSHOT') {
+    var cur = pageStack[stackIndex];
+    if (cur) {
+      var snap = e.data.html;
+      var prev = pageStack[stackIndex];
+      if (prev && prev.snapshot === snap) return;
+      pushPage(cur.html, cur.filename, snap);
+    }
+  } else if (e.data.type === 'UNDO_STATE') {
+    document.getElementById('btn-undo').disabled = !e.data.canUndo;
   }
 });
 
