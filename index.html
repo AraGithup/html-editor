@@ -609,7 +609,9 @@ function downloadHTML() {
       var blob = new Blob([page.html], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = page.filename || ('page_' + (i + 1) + '.html');
+      var ts = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
+      var base = (page.filename || ('page_' + (i + 1))).replace(/\.html?$/i, '');
+      a.download = base + '_edited_' + ts + '.html';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
