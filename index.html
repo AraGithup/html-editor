@@ -114,7 +114,6 @@
     font-size: 13px;
     font-weight: 500;
     transition: background .15s;
-    margin-left: auto;
   }
   .btn-download:hover { background: #2d8f47; }
   .btn-download:disabled { background: #aaa; cursor: not-allowed; }
@@ -242,8 +241,8 @@
   <button class="tb-btn" id="btn-align-center" title="居中">≡ 中</button>
   <button class="tb-btn" id="btn-align-right" title="右对齐">≡ 右</button>
 
-  <button class="btn-download" id="btn-overwrite" disabled onclick="overwriteOriginal()" style="background:#f4a300;">更新原稿</button>
-  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()">保存副本</button>
+  <button class="btn-download" id="btn-overwrite" disabled onclick="overwriteOriginal()" style="background:#f4a300;margin-left:auto;">更新原稿</button>
+  <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()" style="margin-left:8px;">保存副本</button>
 </div>
 
 <!-- 警告条 -->
@@ -475,33 +474,7 @@ function injectEditScript(html) {
 
 // ── 上传选择器 ──
 function showUploadPicker() {
-  var overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10000;display:flex;align-items:center;justify-content:center;';
-  var box = document.createElement('div');
-  box.style.cssText = 'background:#fff;border-radius:12px;padding:28px;display:flex;gap:16px;';
-
-  function makeBtn(icon, label, desc, fn) {
-    var b = document.createElement('button');
-    b.style.cssText = 'width:160px;padding:20px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa;cursor:pointer;text-align:center;transition:border-color .15s,background .15s;';
-    b.innerHTML = '<div style="font-size:36px;margin-bottom:8px;">'+icon+'</div>'
-      + '<div style="font-size:14px;font-weight:600;margin-bottom:4px;">'+label+'</div>'
-      + '<div style="font-size:12px;color:#888;">'+desc+'</div>';
-    b.onmouseover = function(){ b.style.borderColor='#4285f4'; b.style.background='#e8f0fe'; };
-    b.onmouseout  = function(){ b.style.borderColor='#ddd';    b.style.background='#fafafa'; };
-    b.onclick = function(){ document.body.removeChild(overlay); fn(); };
-    return b;
-  }
-
-  box.appendChild(makeBtn('📄', '单个 HTML', '仅上传一个 .html 文件', function(){
-    document.getElementById('file-input').click();
-  }));
-  box.appendChild(makeBtn('📁', '项目文件夹', '含图片/视频等资源', function(){
-    document.getElementById('folder-input').click();
-  }));
-
-  overlay.appendChild(box);
-  overlay.addEventListener('click', function(e){ if(e.target===overlay) document.body.removeChild(overlay); });
-  document.body.appendChild(overlay);
+  document.getElementById('folder-input').click();
 }
 
 // ── 文件上传（单 HTML） ──
