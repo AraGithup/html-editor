@@ -732,11 +732,10 @@ window.addEventListener('message', function(e) {
     });
     if (idx !== -1) {
       saveCurrentPage();
-      currentPageIndex = idx;
-      renderPage(pageStack[idx].html);
-      updateNavButtons();
+      var target = pageStack[idx];
+      pushPage(target.html, target.filename);
+      renderPage(target.html);
     } else if (href && href !== '#') {
-      saveCurrentPage();
       alert('检测到页面跳转：' + href + '\n\n目标页面未上传，请通过"上传文件夹"一次性加载整个项目。');
     }
   } else if (e.data.type === 'MEDIA_HOVER') {
