@@ -303,7 +303,7 @@ function updateNavButtons() {
 
 function pushPage(html, filename, snapshot) {
   pageStack = pageStack.slice(0, stackIndex + 1);
-  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null });
+  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null, originalHtml: html });
   stackIndex = pageStack.length - 1;
   updateNavButtons();
 }
@@ -952,7 +952,6 @@ async function overwriteOriginal() {
   if (!isEditing) return;
   saveCurrentPage();
 
-  // 收集所有需要保存的页面（去重，只保存最新版本）
   var seen = {};
   var pages = [];
   for (var i = pageStack.length - 1; i >= 0; i--) {
@@ -965,8 +964,9 @@ async function overwriteOriginal() {
 
   for (var j = 0; j < pages.length; j++) {
     var page = pages[j];
-    var rawHtml = page.editedHtml || page.html;
-    var html = isFolderUpload ? restoreRelativePaths(rawHtml) : rawHtml;
+    // 用原始 HTML 作为基础，把编辑内容 patch 进去
+    var baseHtml = page.editedHtml ? applyEditsToOriginal(page.originalHtml, page.editedHtml) : page.originalHtml;
+    var html = isFolderUpload ? restoreRelativePaths(baseHtml) : baseHtml;
     var handle = fileHandles[page.filename];
 
     if (canWrite && handle) {
@@ -979,7 +979,6 @@ async function overwriteOriginal() {
       } catch (e) { /* 权限被拒，降级 */ }
     }
 
-    // 降级：下载
     (function(h, fn) {
       var blob = new Blob([h], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
@@ -1000,6 +999,62 @@ async function overwriteOriginal() {
     btn.disabled = true;
     setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 1000);
   }
+}
+
+// 把 editedHtml 里用户编辑的内容（文字、属性）patch 到 originalHtml 上
+// 策略：用 originalHtml 的 DOM 结构，逐个元素对比 editedHtml，替换文字和属性
+function applyEditsToOriginal(originalHtml, editedHtml) {
+  var parser = new DOMParser();
+  var origDoc = parser.parseFromString(originalHtml, 'text/html');
+  var editDoc = parser.parseFromString(editedHtml, 'text/html');
+
+  // 给两个 DOM 的所有元素按 DOM 路径对比，把 editedDoc 里的文字/属性变化写回 origDoc
+  function getPath(el) {
+    var path = [];
+    while (el && el.parentElement) {
+      var idx = Array.prototype.indexOf.call(el.parentElement.children, el);
+      path.unshift(el.tagName + ':' + idx);
+      el = el.parentElement;
+    }
+    return path.join('>');
+  }
+
+  // 建立 origDoc 的路径→元素映射
+  var origMap = {};
+  origDoc.querySelectorAll('*').forEach(function(el) { origMap[getPath(el)] = el; });
+
+  // 遍历 editDoc，把变化 patch 到 origDoc
+  editDoc.querySelectorAll('*').forEach(function(editEl) {
+    var path = getPath(editEl);
+    var origEl = origMap[path];
+    if (!origEl) return;
+
+    // 同步文字内容（只对叶子节点或文字为主的元素）
+    if (editEl.children.length === 0 && origEl.children.length === 0) {
+      if (editEl.innerHTML !== origEl.innerHTML) {
+        origEl.innerHTML = editEl.innerHTML;
+      }
+    } else if (editEl.childNodes.length > 0) {
+      // 同步直接文本节点
+      var editTexts = [], origTexts = [];
+      editEl.childNodes.forEach(function(n) { if (n.nodeType === 3) editTexts.push(n); });
+      origEl.childNodes.forEach(function(n) { if (n.nodeType === 3) origTexts.push(n); });
+      for (var k = 0; k < Math.min(editTexts.length, origTexts.length); k++) {
+        if (editTexts[k].textContent !== origTexts[k].textContent) {
+          origTexts[k].textContent = editTexts[k].textContent;
+        }
+      }
+    }
+
+    // 同步 href / onclick / style（背景色编辑）
+    ['href', 'onclick', 'style', 'src'].forEach(function(attr) {
+      var ev = editEl.getAttribute(attr);
+      var ov = origEl.getAttribute(attr);
+      if (ev !== null && ev !== ov) origEl.setAttribute(attr, ev);
+    });
+  });
+
+  return '<!DOCTYPE html>\n' + origDoc.documentElement.outerHTML;
 }
 
 // ── 保存副本 ──
