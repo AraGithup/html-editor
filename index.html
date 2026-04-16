@@ -355,6 +355,39 @@ const INJECT_SCRIPT = `
 
   document.querySelectorAll('img, video').forEach(addMediaOverlay);
 
+  // 给链接/按钮加"编辑跳转"覆盖按钮
+  function addLinkOverlay(el) {
+    if (el.dataset.linkOverlayAdded) return;
+    el.dataset.linkOverlayAdded = '1';
+    var wrapper = document.createElement('span');
+    wrapper.style.cssText = 'position:relative;display:inline-block;';
+    el.parentNode.insertBefore(wrapper, el);
+    wrapper.appendChild(el);
+    var btn = document.createElement('span');
+    btn.textContent = '🔗 编辑链接';
+    btn.style.cssText = 'position:absolute;top:-22px;left:0;background:rgba(66,133,244,.9);color:#fff;font-size:11px;padding:2px 7px;border-radius:4px;cursor:pointer;z-index:9999;user-select:none;pointer-events:auto;white-space:nowrap;';
+    btn.contentEditable = 'false';
+    btn.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var href = el.tagName === 'A' ? (el.getAttribute('href') || '') : '';
+      var onclick = el.getAttribute('onclick') || '';
+      window.parent.postMessage({
+        type: 'LINK_CLICK',
+        id: el.dataset.linkId,
+        tag: el.tagName,
+        href: href,
+        onclick: onclick
+      }, '*');
+    });
+    wrapper.appendChild(btn);
+  }
+
+  document.querySelectorAll('a, button').forEach(function(el, i) {
+    el.dataset.linkId = 'link_' + i;
+    addLinkOverlay(el);
+  });
+
   // 双击也可触发替换（兜底）
   document.addEventListener('dblclick', function(e) {
     var media = e.target.closest('img, video');
@@ -622,6 +655,8 @@ window.addEventListener('message', function(e) {
     var input = document.getElementById('media-file-input');
     input.accept = (e.data.tag === 'IMG') ? 'image/*' : 'video/*';
     input.click();
+  } else if (e.data.type === 'LINK_CLICK') {
+    showLinkEditor(e.data);
   } else if (e.data.type === 'NAVIGATE') {
     var href = e.data.href;
     // 只处理相对路径的 .html 链接（多页面站点内部跳转）
@@ -638,6 +673,49 @@ window.addEventListener('message', function(e) {
     document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
   }
 });
+
+// ── 链接/按钮编辑弹窗 ──
+function showLinkEditor(data) {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  var isBtn = data.tag === 'BUTTON';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;padding:28px;width:440px;';
+  box.innerHTML = `
+    <h3 style="margin-bottom:16px;font-size:15px;">编辑${isBtn ? '按钮' : '链接'}跳转逻辑</h3>
+    ${!isBtn ? `
+    <label style="display:block;font-size:13px;color:#555;margin-bottom:6px;">跳转地址 (href)</label>
+    <input id="le-href" type="text" value="${escAttr(data.href)}" placeholder="https://... 或 page.html 或 #section"
+      style="width:100%;border:1px solid #ddd;border-radius:6px;padding:8px 10px;font-size:13px;margin-bottom:16px;box-sizing:border-box;">
+    ` : ''}
+    <label style="display:block;font-size:13px;color:#555;margin-bottom:6px;">onclick 事件代码</label>
+    <textarea id="le-onclick" rows="4" placeholder="例：alert('hello') 或留空"
+      style="width:100%;border:1px solid #ddd;border-radius:6px;padding:8px 10px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box;">${escText(data.onclick)}</textarea>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button id="le-cancel" style="padding:8px 20px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer;font-size:14px;">取消</button>
+      <button id="le-confirm" style="padding:8px 20px;border:none;border-radius:6px;background:#4285f4;color:#fff;cursor:pointer;font-size:14px;font-weight:500;">确认</button>
+    </div>
+  `;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  document.getElementById('le-cancel').onclick = function() { document.body.removeChild(overlay); };
+  document.getElementById('le-confirm').onclick = function() {
+    var newHref = !isBtn && document.getElementById('le-href') ? document.getElementById('le-href').value.trim() : null;
+    var newOnclick = document.getElementById('le-onclick').value.trim();
+    var frame = document.getElementById('editor-frame');
+    var el = frame.contentDocument.querySelector('[data-link-id="' + data.id + '"]');
+    if (el) {
+      if (newHref !== null) el.setAttribute('href', newHref);
+      if (newOnclick) el.setAttribute('onclick', newOnclick);
+      else el.removeAttribute('onclick');
+    }
+    document.body.removeChild(overlay);
+  };
+}
+
+function escAttr(s) { return (s || '').replace(/"/g, '&quot;'); }
+function escText(s) { return (s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 // 鼠标跟随提示
 document.addEventListener('mousemove', function(e) {
@@ -755,6 +833,8 @@ function serializeHTML(doc) {
   html = html.replace(/\s*spellcheck="false"/gi, '');
   html = html.replace(/\s*data-editor-id="[^"]*"/gi, '');
   html = html.replace(/\s*data-overlay-added="[^"]*"/gi, '');
+  html = html.replace(/\s*data-link-id="[^"]*"/gi, '');
+  html = html.replace(/\s*data-link-overlay-added="[^"]*"/gi, '');
   // 清理替换按钮覆盖层（wrapper span + 🔄按钮），还原原始 img/video
   html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span style="position:absolute[^"]*"[^>]*>🔄 替换<\/span><\/span>/g, function(_, inner) {
     return inner.trim();
