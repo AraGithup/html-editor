@@ -254,12 +254,12 @@
   <!-- 上传区 -->
   <div id="drop-zone">
     <div style="display:flex;gap:24px;align-items:stretch;justify-content:center;">
-      <div class="drop-box" id="drop-box-file" style="flex:1;max-width:280px;cursor:pointer;" onclick="document.getElementById('file-input').click()">
+      <div class="drop-box" id="drop-box-file" style="flex:1;max-width:280px;cursor:pointer;" onclick="pickSingleFile()">
         <div class="icon">📄</div>
         <h2>上传 HTML</h2>
         <p>单个 .html 文件</p>
       </div>
-      <div class="drop-box" id="drop-box-folder" style="flex:1;max-width:280px;cursor:pointer;" onclick="document.getElementById('folder-input').click()">
+      <div class="drop-box" id="drop-box-folder" style="flex:1;max-width:280px;cursor:pointer;" onclick="pickFolder()">
         <div class="icon">📁</div>
         <h2>上传文件夹</h2>
         <p>含图片 / 视频等资源</p>
@@ -284,7 +284,9 @@ let currentMediaTag = null;
 let isEditing = false;
 let assetMap = {};
 let isFolderUpload = false;
-let originalFiles = {};  // filename → File 对象（用于更新原稿）
+let originalFiles = {};   // filename → File 对象
+let fileHandles = {};     // filename → FileSystemFileHandle（File System Access API）
+let dirHandle = null;     // FileSystemDirectoryHandle（文件夹上传时）
 let allPages = {};       // filename → html 字符串（文件夹上传时所有 HTML）
 
 // ── 页面历史栈（存储每页的 HTML 字符串） ──
@@ -465,62 +467,71 @@ function injectEditScript(html) {
 }
 
 // ── 上传选择器 ──
-function showUploadPicker() {
-  document.getElementById('folder-input').click();
+function showUploadPicker() { pickFolder(); }
+
+// ── 单文件上传 ──
+async function pickSingleFile() {
+  if (window.showOpenFilePicker) {
+    try {
+      var [handle] = await window.showOpenFilePicker({ types: [{ description: 'HTML', accept: { 'text/html': ['.html', '.htm'] } }] });
+      var file = await handle.getFile();
+      fileHandles = {}; fileHandles[file.name] = handle;
+      dirHandle = null;
+      assetMap = {}; isFolderUpload = false;
+      loadHTMLFile(file);
+    } catch (e) { /* 用户取消 */ }
+  } else {
+    document.getElementById('file-input').click();
+  }
 }
 
-// ── 文件上传（单 HTML） ──
+// ── 文件夹上传 ──
+async function pickFolder() {
+  if (window.showDirectoryPicker) {
+    try {
+      var dh = await window.showDirectoryPicker({ mode: 'readwrite' });
+      dirHandle = dh;
+      fileHandles = {};
+      var files = [];
+      await collectDirFiles(dh, dh.name, files);
+      simulateFolderUpload(files);
+    } catch (e) { /* 用户取消 */ }
+  } else {
+    document.getElementById('folder-input').click();
+  }
+}
+
+async function collectDirFiles(dirH, rootName, files) {
+  for await (var entry of dirH.values()) {
+    if (entry.kind === 'file') {
+      var file = await entry.getFile();
+      var relPath = dirH === dirHandle ? entry.name : (dirH._relPath || '') + '/' + entry.name;
+      file._relativePath = relPath.replace(/^\//, '');
+      if (/\.html?$/i.test(entry.name)) fileHandles[entry.name] = entry;
+      files.push(file);
+    } else if (entry.kind === 'directory') {
+      entry._relPath = (dirH._relPath || '') + '/' + entry.name;
+      await collectDirFiles(entry, rootName, files);
+    }
+  }
+}
+
+// ── 降级：<input> 上传 ──
 document.getElementById('file-input').addEventListener('change', function(e) {
   var file = e.target.files[0];
-  if (file) {
-    assetMap = {};
-    isFolderUpload = false;
-    loadHTMLFile(file);
-  }
+  if (file) { fileHandles = {}; dirHandle = null; assetMap = {}; isFolderUpload = false; loadHTMLFile(file); }
   this.value = '';
 });
 
-// ── 文件夹上传 ──
 document.getElementById('folder-input').addEventListener('change', function(e) {
   var files = Array.from(e.target.files);
   if (!files.length) return;
   this.value = '';
-
-  // 先把所有非 HTML 文件读成 base64 存入 assetMap
-  var nonHtml = files.filter(function(f) { return !/\.html?$/i.test(f.name); });
-  var htmlFiles = files.filter(function(f) { return /\.html?$/i.test(f.name); });
-
-  if (!htmlFiles.length) { alert('文件夹中没有找到 HTML 文件'); return; }
-
-  assetMap = {};
-  isFolderUpload = true;
-  var pending = nonHtml.length;
-
-  function onAssetsReady() {
-    if (htmlFiles.length === 1) {
-      loadHTMLFile(htmlFiles[0]);
-    } else {
-      // 多个 HTML，让用户选择入口文件
-      showHTMLPicker(htmlFiles);
-    }
-  }
-
-  if (pending === 0) { onAssetsReady(); return; }
-
-  nonHtml.forEach(function(file) {
-    var reader = new FileReader();
-    reader.onload = function(ev) {
-      // 用文件名和相对路径两种 key 都存一份，方便匹配
-      var key = file.webkitRelativePath
-        ? file.webkitRelativePath.split('/').slice(1).join('/')  // 去掉根文件夹名
-        : file.name;
-      assetMap[key] = ev.target.result;
-      assetMap[file.name] = ev.target.result;  // 仅文件名也能匹配
-      pending--;
-      if (pending === 0) onAssetsReady();
-    };
-    reader.readAsDataURL(file);
+  files.forEach(function(f) {
+    if (f.webkitRelativePath) f._relativePath = f.webkitRelativePath.split('/').slice(1).join('/');
   });
+  fileHandles = {}; dirHandle = null;
+  simulateFolderUpload(files);
 });
 
 // 多 HTML 文件时弹出选择器
@@ -924,24 +935,57 @@ function serializeHTML(doc) {
   return html;
 }
 
-// ── 更新原稿（直接覆盖，文件名不变，不询问嵌入方式） ──
-function overwriteOriginal() {
+// ── 更新原稿（直接覆盖原文件，不支持时降级下载） ──
+async function overwriteOriginal() {
   if (!isEditing) return;
   saveCurrentPage();
-  pageStack.forEach(function(page, i) {
-    setTimeout(function() {
-      // 更新原稿：文件夹上传时保持相对路径，单文件保持内嵌
-      var html = isFolderUpload ? restoreRelativePaths(page.html) : page.html;
-      var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+
+  // 收集所有需要保存的页面（去重，只保存最新版本）
+  var seen = {};
+  var pages = [];
+  for (var i = pageStack.length - 1; i >= 0; i--) {
+    var p = pageStack[i];
+    if (!seen[p.filename]) { seen[p.filename] = true; pages.unshift(p); }
+  }
+
+  var canWrite = !!window.showSaveFilePicker;
+  var saved = 0, failed = 0;
+
+  for (var j = 0; j < pages.length; j++) {
+    var page = pages[j];
+    var html = isFolderUpload ? restoreRelativePaths(page.html) : page.html;
+    var handle = fileHandles[page.filename];
+
+    if (canWrite && handle) {
+      try {
+        var writable = await handle.createWritable();
+        await writable.write(html);
+        await writable.close();
+        saved++;
+        continue;
+      } catch (e) { /* 权限被拒，降级 */ }
+    }
+
+    // 降级：下载
+    (function(h, fn) {
+      var blob = new Blob([h], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = page.filename || ('page_' + (i + 1) + '.html');
+      a.download = fn;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(a.href);
-    }, i * 300);
-  });
+      failed++;
+    })(html, page.filename);
+  }
+
+  if (saved > 0 && failed === 0) {
+    var btn = document.getElementById('btn-overwrite');
+    var orig = btn.textContent;
+    btn.textContent = '✓ 已保存';
+    setTimeout(function() { btn.textContent = orig; }, 1500);
+  }
 }
 
 // ── 保存副本 ──
