@@ -315,10 +315,9 @@ function renderPage(html) {
   frame.srcdoc = injected;
 }
 
-function renderSnapshot(snapshot, filename) {
-  // 快照已经是注入过脚本的 DOM，直接渲染
+function renderSnapshot(snapshot) {
   var frame = document.getElementById('editor-frame');
-  frame.srcdoc = snapshot;
+  frame.srcdoc = injectEditScript(snapshot);
 }
 
 // ── 注入到用户 HTML 的编辑脚本 ──
@@ -336,7 +335,7 @@ const INJECT_SCRIPT = `
 
   // 链接/按钮交互：
   // - 直接点击 → 触发跳转/onclick
-  // - hover 停留 800ms 后进入编辑模式（出现光标提示），此时点击 → 编辑文字
+  // - hover 停留 800ms 后进入编辑模式，此时点击 → 编辑文字
   var _hoverEditEl = null;
   var _hoverTimer = null;
 
@@ -346,10 +345,7 @@ const INJECT_SCRIPT = `
     el.style.cursor = 'text';
   }
   function clearHoverEdit(el) {
-    if (el) {
-      el.style.outline = '';
-      el.style.cursor = '';
-    }
+    if (el) { el.style.outline = ''; el.style.cursor = ''; }
     _hoverEditEl = null;
   }
 
@@ -357,9 +353,7 @@ const INJECT_SCRIPT = `
     var el = e.target.closest('a, button');
     if (!el || el.dataset.editorBtn) return;
     if (_hoverTimer) clearTimeout(_hoverTimer);
-    _hoverTimer = setTimeout(function() {
-      setHoverEdit(el);
-    }, 800);
+    _hoverTimer = setTimeout(function() { setHoverEdit(el); }, 800);
   }, true);
 
   document.addEventListener('mouseout', function(e) {
@@ -369,7 +363,7 @@ const INJECT_SCRIPT = `
     if (_hoverEditEl === el) clearHoverEdit(el);
   }, true);
 
-  // click 拦截：hover 编辑模式下只编辑，否则正常执行
+  // click 拦截
   document.addEventListener('click', function(e) {
     var a = e.target.closest('a');
     if (a && !a.dataset.editorBtn) {
@@ -385,15 +379,13 @@ const INJECT_SCRIPT = `
     var btn = e.target.closest('button');
     if (btn && !btn.dataset.editorBtn) {
       if (_hoverEditEl === btn) {
-        // hover 编辑模式：阻止 onclick，只编辑文字
         e.preventDefault();
         e.stopImmediatePropagation();
       }
-      // 非编辑模式：不拦截，让 onclick 正常执行
     }
   }, true);
 
-  // 给图片/视频加替换按钮覆盖层
+  // 给图片/视频加替换按钮
   function addMediaOverlay(el) {
     if (el.dataset.overlayAdded) return;
     el.dataset.overlayAdded = '1';
@@ -406,20 +398,14 @@ const INJECT_SCRIPT = `
     btn.style.cssText = 'position:absolute;top:6px;left:6px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:3px 8px;border-radius:4px;cursor:pointer;z-index:9999;user-select:none;pointer-events:auto;';
     btn.contentEditable = 'false';
     btn.addEventListener('mousedown', function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      window.parent.postMessage({
-        type: 'MEDIA_CLICK',
-        tag: el.tagName,
-        id: el.dataset.editorId
-      }, '*');
+      e.preventDefault(); e.stopPropagation();
+      window.parent.postMessage({ type: 'MEDIA_CLICK', tag: el.tagName, id: el.dataset.editorId }, '*');
     });
     wrapper.appendChild(btn);
   }
-
   document.querySelectorAll('img, video').forEach(addMediaOverlay);
 
-  // 给链接/按钮加"编辑跳转"覆盖按钮
+  // 给链接/按钮加"编辑链接"覆盖按钮
   function addLinkOverlay(el) {
     if (el.dataset.linkOverlayAdded) return;
     el.dataset.linkOverlayAdded = '1';
@@ -433,25 +419,39 @@ const INJECT_SCRIPT = `
     btn.contentEditable = 'false';
     btn.dataset.editorBtn = '1';
     btn.addEventListener('mousedown', function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      var href = el.tagName === 'A' ? (el.getAttribute('href') || '') : '';
-      var onclick = el.getAttribute('onclick') || '';
+      e.preventDefault(); e.stopPropagation();
       window.parent.postMessage({
         type: 'LINK_CLICK',
         id: el.dataset.linkId,
         tag: el.tagName,
-        href: href,
-        onclick: onclick
+        href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
+        onclick: el.getAttribute('onclick') || ''
       }, '*');
     });
     wrapper.appendChild(btn);
   }
-
   document.querySelectorAll('a, button').forEach(function(el, i) {
     el.dataset.linkId = 'link_' + i;
     addLinkOverlay(el);
   });
+
+  // 双击替换媒体（兜底）
+  document.addEventListener('dblclick', function(e) {
+    var media = e.target.closest('img, video');
+    if (!media) return;
+    e.preventDefault(); e.stopPropagation();
+    window.parent.postMessage({ type: 'MEDIA_CLICK', tag: media.tagName, id: media.dataset.editorId }, '*');
+  });
+
+  // ── 页面内状态快照（单页应用前进/返回） ──
+  // 每次按钮/链接点击后，等 JS 执行完再抓快照发给父页面
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('[data-editor-btn]') || e.target.dataset.editorBtn) return;
+    if (_hoverEditEl) return;
+    setTimeout(function() {
+      window.parent.postMessage({ type: 'DOM_SNAPSHOT', html: document.documentElement.outerHTML }, '*');
+    }, 80);
+  }, true);
 
   // ── 编辑撤销历史（最多10步） ──
   var _editHistory = [];
@@ -460,9 +460,7 @@ const INJECT_SCRIPT = `
 
   function snapshotForUndo() {
     var snap = document.documentElement.outerHTML;
-    // 截断前进历史
     _editHistory = _editHistory.slice(0, _editIndex + 1);
-    // 避免重复
     if (_editHistory[_editIndex] === snap) return;
     _editHistory.push(snap);
     if (_editHistory.length > 10) _editHistory.shift();
@@ -470,19 +468,16 @@ const INJECT_SCRIPT = `
     window.parent.postMessage({ type: 'UNDO_STATE', canUndo: _editIndex > 0 }, '*');
   }
 
-  // 初始快照
   setTimeout(function() {
     _editHistory = [document.documentElement.outerHTML];
     _editIndex = 0;
   }, 100);
 
-  // 监听文字编辑
   document.addEventListener('input', function() {
     clearTimeout(_undoTimer);
     _undoTimer = setTimeout(snapshotForUndo, 400);
   }, true);
 
-  // 接收撤销指令
   window.addEventListener('message', function(e) {
     if (e.data.type === 'DO_UNDO') {
       if (_editIndex <= 0) return;
@@ -493,30 +488,9 @@ const INJECT_SCRIPT = `
     }
   });
 
-
-  // 每次点击非编辑器按钮后，延迟捕获 DOM 快照发给父页面
-  document.addEventListener('click', function(e) {
-    if (e.target.closest('[data-editor-btn]') || e.target.dataset.editorBtn) return;
-    if (_hoverEditEl) return; // 编辑模式下的点击不记录状态
-    setTimeout(function() {
-      window.parent.postMessage({
-        type: 'DOM_SNAPSHOT',
-        html: document.documentElement.outerHTML
-      }, '*');
-    }, 80);
-  }, true);
-    var media = e.target.closest('img, video');
-    if (!media) return;
-    e.preventDefault();
-    e.stopPropagation();
-    window.parent.postMessage({
-      type: 'MEDIA_CLICK',
-      tag: media.tagName,
-      id: media.dataset.editorId
-    }, '*');
-  });
 })();
 <\/script>`;
+
 
 function injectEditScript(html) {
   if (/<\/body>/i.test(html)) {
@@ -844,12 +818,15 @@ window.addEventListener('message', function(e) {
     document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
   } else if (e.data.type === 'DOM_SNAPSHOT') {
     var cur = pageStack[stackIndex];
-    if (cur) {
-      var snap = e.data.html;
-      var prev = pageStack[stackIndex];
-      if (prev && prev.snapshot === snap) return;
-      pushPage(cur.html, cur.filename, snap);
-    }
+    if (!cur) return;
+    var snap = e.data.html;
+    // 去掉注入脚本，避免重复注入
+    snap = snap.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/i, '');
+    // 把当前状态存为新的历史帧（截断前进历史）
+    pageStack = pageStack.slice(0, stackIndex + 1);
+    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap });
+    stackIndex = pageStack.length - 1;
+    updateNavButtons();
   } else if (e.data.type === 'UNDO_STATE') {
     document.getElementById('btn-undo').disabled = !e.data.canUndo;
   }
