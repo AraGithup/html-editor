@@ -279,6 +279,7 @@ let currentMediaId = null;
 let currentMediaTag = null;
 let isEditing = false;
 let assetMap = {};  // 文件名/相对路径 → base64 data URL
+let isFolderUpload = false;  // 是否通过文件夹上传
 
 // ── 页面历史栈（存储每页的 HTML 字符串） ──
 let pageStack = [];   // [{html, filename}]
@@ -381,6 +382,7 @@ document.getElementById('file-input').addEventListener('change', function(e) {
   var file = e.target.files[0];
   if (file) {
     assetMap = {};
+    isFolderUpload = false;
     loadHTMLFile(file);
   }
   this.value = '';
@@ -399,6 +401,7 @@ document.getElementById('folder-input').addEventListener('change', function(e) {
   if (!htmlFiles.length) { alert('文件夹中没有找到 HTML 文件'); return; }
 
   assetMap = {};
+  isFolderUpload = true;
   var pending = nonHtml.length;
 
   function onAssetsReady() {
@@ -526,6 +529,7 @@ function simulateFolderUpload(files) {
   var htmlFiles = files.filter(function(f) { return /\.html?$/i.test(f.name); });
   if (!htmlFiles.length) { alert('文件夹中没有找到 HTML 文件'); return; }
   assetMap = {};
+  isFolderUpload = true;
   var pending = nonHtml.length;
   function onReady() {
     if (htmlFiles.length === 1) loadHTMLFile(htmlFiles[0]);
@@ -759,15 +763,12 @@ function serializeHTML(doc) {
 }
 
 // ── 下载全部页面 ──
-// 保存偏好：'inline'（全部内嵌）或 'relative'（保持相对路径）
-let savePreference = localStorage.getItem('savePreference') || null;
-
 function downloadHTML() {
   if (!isEditing) return;
-  if (savePreference) {
-    doDownload(savePreference);
-  } else {
+  if (isFolderUpload) {
     showSaveDialog();
+  } else {
+    doDownload('inline');
   }
 }
 
@@ -786,15 +787,12 @@ function showSaveDialog() {
         <span style="font-size:12px;color:#666;">所有图片/视频转为 base64 写入 HTML，文件可独立使用，但体积较大。</span>
       </span>
     </label>
-    <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;margin-bottom:20px;background:#fafafa;">
+    <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;margin-bottom:24px;background:#fafafa;">
       <input type="radio" name="saveMode" value="relative" style="margin-top:2px;flex-shrink:0;">
       <span>
         <strong style="font-size:14px;">保持相对路径</strong><br>
         <span style="font-size:12px;color:#666;">只内嵌手动替换过的资源，其余保持原路径。文件体积小，但需与资源文件夹一起使用。</span>
       </span>
-    </label>
-    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;margin-bottom:20px;cursor:pointer;">
-      <input type="checkbox" id="save-remember"> 记住我的选择
     </label>
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button id="save-cancel" style="padding:8px 20px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer;font-size:14px;">取消</button>
@@ -804,7 +802,6 @@ function showSaveDialog() {
   overlay.appendChild(box);
   document.body.appendChild(overlay);
 
-  // 点击选项高亮
   box.querySelectorAll('input[name="saveMode"]').forEach(function(radio) {
     radio.addEventListener('change', function() {
       box.querySelectorAll('label').forEach(function(l) {
@@ -813,22 +810,14 @@ function showSaveDialog() {
           l.style.background = '#fafafa';
         }
       });
-      var parentLabel = radio.closest('label');
-      parentLabel.style.border = '2px solid #4285f4';
-      parentLabel.style.background = '#f0f6ff';
+      radio.closest('label').style.border = '2px solid #4285f4';
+      radio.closest('label').style.background = '#f0f6ff';
     });
   });
 
-  document.getElementById('save-cancel').onclick = function() {
-    document.body.removeChild(overlay);
-  };
+  document.getElementById('save-cancel').onclick = function() { document.body.removeChild(overlay); };
   document.getElementById('save-confirm').onclick = function() {
     var mode = box.querySelector('input[name="saveMode"]:checked').value;
-    var remember = document.getElementById('save-remember').checked;
-    if (remember) {
-      savePreference = mode;
-      localStorage.setItem('savePreference', mode);
-    }
     document.body.removeChild(overlay);
     doDownload(mode);
   };
