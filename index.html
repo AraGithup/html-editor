@@ -34,6 +34,17 @@
     font-size: 15px;
     color: #333;
     margin-right: 12px;
+  }
+
+  #toolbar .current-file {
+    font-size: 13px;
+    color: #666;
+    margin-right: 12px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
     white-space: nowrap;
   }
 
@@ -193,6 +204,7 @@
 <!-- 工具栏 -->
 <div id="toolbar">
   <span class="logo">✏️ HTML 编辑器</span>
+  <span class="current-file" id="current-filename"></span>
   <input type="file" id="file-input" accept=".html,.htm" style="display:none">
   <input type="file" id="folder-input" webkitdirectory multiple style="display:none">
 
@@ -312,11 +324,19 @@ function renderPage(html) {
   var injected = injectEditScript(html);
   var frame = document.getElementById('editor-frame');
   frame.srcdoc = injected;
+  updateFilenameDisplay();
 }
 
 function renderSnapshot(snapshot) {
   var frame = document.getElementById('editor-frame');
   frame.srcdoc = injectEditScript(snapshot);
+  updateFilenameDisplay();
+}
+
+function updateFilenameDisplay() {
+  var entry = pageStack[stackIndex];
+  var el = document.getElementById('current-filename');
+  el.textContent = entry ? entry.filename : '';
 }
 
 // ── 注入到用户 HTML 的编辑脚本 ──
