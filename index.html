@@ -729,7 +729,8 @@ function saveCurrentPage() {
   var doc = frame.contentDocument;
   if (!doc) return;
   var html = serializeHTML(doc);
-  pageStack[stackIndex].html = html;
+  // editedHtml 存编辑内容，html 保持初始值（用于渲染初始状态）
+  pageStack[stackIndex].editedHtml = html;
 }
 
 // ── postMessage 接收 ──
@@ -963,7 +964,8 @@ async function overwriteOriginal() {
 
   for (var j = 0; j < pages.length; j++) {
     var page = pages[j];
-    var html = isFolderUpload ? restoreRelativePaths(page.html) : page.html;
+    var rawHtml = page.editedHtml || page.html;
+    var html = isFolderUpload ? restoreRelativePaths(rawHtml) : rawHtml;
     var handle = fileHandles[page.filename];
 
     if (canWrite && handle) {
@@ -994,7 +996,8 @@ async function overwriteOriginal() {
     var btn = document.getElementById('btn-overwrite');
     var orig = btn.textContent;
     btn.textContent = '✓ 已保存';
-    setTimeout(function() { btn.textContent = orig; }, 1500);
+    btn.disabled = true;
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 1000);
   }
 }
 
