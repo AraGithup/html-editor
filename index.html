@@ -772,7 +772,7 @@ window.addEventListener('message', function(e) {
     snap = snap.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/i, '');
     // 把当前状态存为新的历史帧（截断前进历史）
     pageStack = pageStack.slice(0, stackIndex + 1);
-    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap });
+    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap, editedHtml: cur.editedHtml });
     stackIndex = pageStack.length - 1;
     updateNavButtons();
   }
