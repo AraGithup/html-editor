@@ -435,6 +435,7 @@ const INJECT_SCRIPT = `
   });
 
   // 双击替换媒体（兜底）
+  document.addEventListener('dblclick', function(e) {
     var media = e.target.closest('img, video');
     if (!media) return;
     e.preventDefault(); e.stopPropagation();
