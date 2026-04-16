@@ -378,17 +378,9 @@ const INJECT_SCRIPT = `
     }
     var btn = e.target.closest('button');
     if (btn && !btn.dataset.editorBtn) {
-      if (_hoverEditEl !== btn) {
-        // 非编辑模式 → 阻止默认并触发 onclick（通知父页面）
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        var oc = btn.getAttribute('onclick');
-        if (oc) window.parent.postMessage({ type: 'NAVIGATE', href: oc }, '*');
-      } else {
-        // 编辑模式 → 只阻止 onclick，让文字可编辑
-        e.preventDefault();
-        e.stopImmediatePropagation();
-      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // 编辑模式（hover 800ms）下不做任何事，让 contentEditable 获焦
     }
   }, true);
 
@@ -791,16 +783,24 @@ window.addEventListener('message', function(e) {
     showBgEditor(e.data);
   } else if (e.data.type === 'NAVIGATE') {
     var href = e.data.href;
-    // 只处理相对路径的 .html 链接（多页面站点内部跳转）
     if (/^https?:\/\//i.test(href)) {
-      // 外部链接：在新标签打开
       window.open(href, '_blank');
       return;
     }
-    // 内部链接：提示用户上传目标页面
-    var msg = '检测到页面跳转链接：' + href + '\n\n要编辑目标页面，请上传对应的 HTML 文件。\n当前页面的编辑内容已保存，可用 ◀ 返回。';
-    saveCurrentPage();
-    alert(msg);
+    // 内部链接：先在已加载的页面里找
+    var basename = href.replace(/^.*\//, '').replace(/[?#].*$/, '');
+    var idx = pageStack.findIndex(function(p) {
+      return p.filename === basename || p.filename === href;
+    });
+    if (idx !== -1) {
+      saveCurrentPage();
+      currentPageIndex = idx;
+      renderPage(pageStack[idx].html);
+      updateNavButtons();
+    } else if (href && href !== '#') {
+      saveCurrentPage();
+      alert('检测到页面跳转：' + href + '\n\n目标页面未上传，请通过"上传文件夹"一次性加载整个项目。');
+    }
   } else if (e.data.type === 'MEDIA_HOVER') {
     document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
   }
