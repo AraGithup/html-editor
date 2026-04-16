@@ -1012,16 +1012,21 @@ function showSaveDialog() {
 
 function doDownload(mode) {
   saveCurrentPage();
-  var pagesToSave = pageStack.map(function(page) {
-    if (mode === 'relative') {
-      // 把 base64 还原回原始相对路径（仅还原未被用户手动替换的）
-      return { html: restoreRelativePaths(page.html), filename: page.filename };
+  // 按文件名去重，保留每个文件最新的一帧（含编辑内容）
+  var seen = {};
+  var unique = [];
+  for (var i = pageStack.length - 1; i >= 0; i--) {
+    var p = pageStack[i];
+    if (!seen[p.filename]) {
+      seen[p.filename] = true;
+      unique.unshift(p);
     }
-    return page;
-  });
-  pagesToSave.forEach(function(page, i) {
+  }
+  unique.forEach(function(page, i) {
     setTimeout(function() {
-      var blob = new Blob([page.html], { type: 'text/html;charset=utf-8' });
+      var rawHtml = page.editedHtml || page.html;
+      var html = (mode === 'relative') ? restoreRelativePaths(rawHtml) : rawHtml;
+      var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       var ts = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
