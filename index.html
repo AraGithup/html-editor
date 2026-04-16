@@ -353,8 +353,13 @@ const INJECT_SCRIPT = `
 
   // 监听文字编辑，发给父页面
   document.addEventListener('input', function(e) {
+    // 找到有 data-eid 的最近元素（自身或祖先）
     var el = e.target;
-    if (!el.dataset.eid) return;
+    while (el && el !== document.body) {
+      if (el.dataset && el.dataset.eid) break;
+      el = el.parentElement;
+    }
+    if (!el || !el.dataset || !el.dataset.eid) return;
     window.parent.postMessage({ type: 'TEXT_EDIT', eid: el.dataset.eid, html: el.innerHTML }, '*');
   }, true);
 
@@ -699,7 +704,7 @@ function loadHTMLFile(file) {
     stackIndex = -1;
     edits = {};
     pushPage(html, file.name);
-    renderPage(html);
+    renderPage(pageStack[0].html);
     document.getElementById('editor-frame').style.display = 'block';
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('btn-download').disabled = false;
@@ -791,7 +796,7 @@ window.addEventListener('message', function(e) {
       saveCurrentPage();
       var html = inlineAssets(allPages[targetFilename]);
       pushPage(html, targetFilename);
-      renderPage(html);
+      renderPage(pageStack[stackIndex].html);
     } else if (href && href !== '#') {
       alert('检测到页面跳转：' + href + '\n\n目标页面未上传，请通过"上传文件夹"一次性加载整个项目。');
     }
