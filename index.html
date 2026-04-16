@@ -240,6 +240,10 @@
   <button class="tb-btn" id="btn-align-center" title="居中">≡ 中</button>
   <button class="tb-btn" id="btn-align-right" title="右对齐">≡ 右</button>
 
+  <div class="sep"></div>
+
+  <button class="tb-btn" id="btn-bg-toggle" title="编辑背景色" onclick="toggleBgMode()" style="white-space:nowrap;">🎨 背景色</button>
+
   <button class="btn-download" id="btn-overwrite" disabled onclick="overwriteOriginal()" style="background:#f4a300;margin-left:auto;">更新原稿</button>
   <button class="btn-download" id="btn-download" disabled onclick="downloadHTML()" style="margin-left:8px;">保存副本</button>
 </div>
@@ -322,32 +326,70 @@ const INJECT_SCRIPT = `
     el.dataset.editorId = 'media_' + i;
   });
 
-  // 拦截链接点击 → 长按才触发导航，普通点击只编辑文字
-  var _pressTimer = null;
-  document.addEventListener('mousedown', function(e) {
-    var a = e.target.closest('a');
-    if (!a) return;
-    _pressTimer = setTimeout(function() {
-      _pressTimer = null;
-      var href = a.getAttribute('href');
-      if (href && href !== '#' && !href.startsWith('javascript')) {
-        window.parent.postMessage({ type: 'NAVIGATE', href: href }, '*');
-      }
-    }, 500);
-  }, true);
-  document.addEventListener('mouseup', function() {
-    if (_pressTimer) { clearTimeout(_pressTimer); _pressTimer = null; }
-  }, true);
-  // 阻止 <a> 的默认跳转，但不阻止 contentEditable 焦点
-  document.addEventListener('click', function(e) {
-    var a = e.target.closest('a');
-    if (a) { e.preventDefault(); }
+  // 链接/按钮交互：
+  // - 直接点击 → 触发跳转/onclick
+  // - hover 停留 800ms 后进入编辑模式（出现光标提示），此时点击 → 编辑文字
+  var _hoverEditEl = null;
+  var _hoverTimer = null;
+
+  function setHoverEdit(el) {
+    _hoverEditEl = el;
+    el.style.outline = '2px dashed #4285f4';
+    el.style.cursor = 'text';
+  }
+  function clearHoverEdit(el) {
+    if (el) {
+      el.style.outline = '';
+      el.style.cursor = '';
+    }
+    _hoverEditEl = null;
+  }
+
+  document.addEventListener('mouseover', function(e) {
+    var el = e.target.closest('a, button');
+    if (!el || el.dataset.editorBtn) return;
+    if (_hoverTimer) clearTimeout(_hoverTimer);
+    _hoverTimer = setTimeout(function() {
+      setHoverEdit(el);
+    }, 800);
   }, true);
 
-  // 阻止 <button> 的 onclick 执行（编辑模式下不应触发）
+  document.addEventListener('mouseout', function(e) {
+    var el = e.target.closest('a, button');
+    if (!el || el.dataset.editorBtn) return;
+    if (_hoverTimer) { clearTimeout(_hoverTimer); _hoverTimer = null; }
+    if (_hoverEditEl === el) clearHoverEdit(el);
+  }, true);
+
+  // click 拦截：hover 编辑模式下只编辑，否则触发跳转
   document.addEventListener('click', function(e) {
+    var a = e.target.closest('a');
+    if (a && !a.dataset.editorBtn) {
+      e.preventDefault();
+      if (_hoverEditEl !== a) {
+        // 非编辑模式 → 触发导航
+        var href = a.getAttribute('href');
+        if (href && href !== '#' && !href.startsWith('javascript')) {
+          window.parent.postMessage({ type: 'NAVIGATE', href: href }, '*');
+        }
+      }
+      // 编辑模式下什么都不做，让 contentEditable 自然获焦
+      return;
+    }
     var btn = e.target.closest('button');
-    if (btn && !btn.dataset.editorBtn) { e.preventDefault(); e.stopImmediatePropagation(); }
+    if (btn && !btn.dataset.editorBtn) {
+      if (_hoverEditEl !== btn) {
+        // 非编辑模式 → 阻止默认并触发 onclick（通知父页面）
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        var oc = btn.getAttribute('onclick');
+        if (oc) window.parent.postMessage({ type: 'NAVIGATE', href: oc }, '*');
+      } else {
+        // 编辑模式 → 只阻止 onclick，让文字可编辑
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }
   }, true);
 
   // 给图片/视频加替换按钮覆盖层
@@ -429,17 +471,16 @@ const INJECT_SCRIPT = `
     if (!bg) return;
     el.dataset.bgOverlayAdded = '1';
     el.dataset.bgId = 'bg_' + i;
-    // 确保元素有 position 以便绝对定位按钮
     var pos = window.getComputedStyle(el).position;
     if (pos === 'static') el.style.position = 'relative';
     var btn = document.createElement('span');
     btn.textContent = '🎨 背景';
-    btn.style.cssText = 'position:absolute;top:4px;right:4px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:2px 7px;border-radius:4px;cursor:pointer;z-index:9998;user-select:none;pointer-events:auto;white-space:nowrap;';
+    btn.className = '__bg_edit_btn__';
+    btn.style.cssText = 'display:none;position:absolute;top:4px;right:4px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:2px 7px;border-radius:4px;cursor:pointer;z-index:9998;user-select:none;pointer-events:auto;white-space:nowrap;';
     btn.contentEditable = 'false';
     btn.addEventListener('mousedown', function(e) {
       e.preventDefault();
       e.stopPropagation();
-      // 读取内联 style（优先），否则用 computed
       var inlineBg = el.style.background || el.style.backgroundColor || '';
       var computedBg = window.getComputedStyle(el).background;
       window.parent.postMessage({
@@ -454,6 +495,18 @@ const INJECT_SCRIPT = `
 
   document.querySelectorAll('*').forEach(function(el, i) {
     addBgOverlay(el, i);
+  });
+
+  // 父页面控制背景编辑模式
+  window.addEventListener('message', function(e) {
+    if (e.data.type === 'SET_BG_MODE') {
+      var display = e.data.enabled ? 'inline-block' : 'none';
+      document.querySelectorAll('.__bg_edit_btn__').forEach(function(b) {
+        b.style.display = display;
+      });
+      // 背景模式开启时禁用文字编辑，关闭时恢复
+      document.body.contentEditable = e.data.enabled ? 'false' : 'true';
+    }
   });
 
   // 双击也可触发替换（兜底）
@@ -931,6 +984,18 @@ function showBgEditor(data) {
       applyBgToFrame(data.id, colorInput.value);
       document.body.removeChild(overlay);
     };
+  }
+}
+
+let bgModeOn = false;
+function toggleBgMode() {
+  bgModeOn = !bgModeOn;
+  var btn = document.getElementById('btn-bg-toggle');
+  btn.style.background = bgModeOn ? '#4285f4' : '';
+  btn.style.color = bgModeOn ? '#fff' : '';
+  var frame = document.getElementById('editor-frame');
+  if (frame.contentWindow) {
+    frame.contentWindow.postMessage({ type: 'SET_BG_MODE', enabled: bgModeOn }, '*');
   }
 }
 
