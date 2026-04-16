@@ -315,7 +315,7 @@ function updateNavButtons() {
 
 function pushPage(html, filename, snapshot) {
   pageStack = pageStack.slice(0, stackIndex + 1);
-  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null, originalHtml: html });
+  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null, originalHtml: addEids(html), edits: [] });
   stackIndex = pageStack.length - 1;
   updateNavButtons();
 }
@@ -472,47 +472,37 @@ const INJECT_SCRIPT = `
   }, true);
 
   // ── 收集用户编辑变化，发给父页面用于保存 ──
-  function getXPath(el) {
-    if (el.nodeType === 3) {
-      // 文本节点：找它是父元素的第几个文本节点
-      var parent = el.parentElement;
-      var idx = 0;
-      parent.childNodes.forEach(function(n) { if (n === el) return; if (n.nodeType === 3) idx++; });
-      return getXPath(parent) + '/text()[' + (idx + 1) + ']';
-    }
-    var path = '';
-    while (el && el.nodeType === 1 && el !== document.documentElement) {
-      var tag = el.tagName.toLowerCase();
-      var siblings = Array.prototype.filter.call(el.parentElement.children, function(c) { return c.tagName === el.tagName; });
-      var pos = siblings.indexOf(el) + 1;
-      path = '/' + tag + '[' + pos + ']' + path;
-      el = el.parentElement;
-    }
-    return '/html' + path;
-  }
-
   document.addEventListener('input', function(e) {
-    var target = e.target;
-    // 找到被编辑的文本节点所在元素
     var sel = window.getSelection();
-    if (sel && sel.anchorNode && sel.anchorNode.nodeType === 3) {
-      var textNode = sel.anchorNode;
-      var parent = textNode.parentElement;
-      if (!parent) return;
-      var xpath = getXPath(parent);
-      window.parent.postMessage({
-        type: 'EDIT_CHANGE',
-        xpath: xpath,
-        innerHTML: parent.innerHTML
-      }, '*');
-    }
+    var node = sel && sel.anchorNode;
+    if (!node) return;
+    var el = node.nodeType === 3 ? node.parentElement : node;
+    if (!el) return;
+    // 找最近的有 data-eid 的祖先
+    while (el && !el.dataset.eid) el = el.parentElement;
+    if (!el) return;
+    window.parent.postMessage({
+      type: 'EDIT_CHANGE',
+      eid: el.dataset.eid,
+      innerHTML: el.innerHTML
+    }, '*');
   }, true);
 
 })();
 <\/script>`;
 
 
+function addEids(html) {
+  var eid = 0;
+  return html.replace(/<([a-zA-Z][a-zA-Z0-9]*)([\s>])/g, function(match, tag, after) {
+    var lower = tag.toLowerCase();
+    if (lower === 'script' || lower === 'style' || lower === 'meta' || lower === 'link' || lower === 'br' || lower === 'hr' || lower === 'img' || lower === 'input') return match;
+    return '<' + tag + ' data-eid="' + (eid++) + '"' + after;
+  });
+}
+
 function injectEditScript(html) {
+  html = addEids(html);
   if (/<\/body>/i.test(html)) {
     return html.replace(/<\/body>/i, INJECT_SCRIPT + '</body>');
   }
@@ -834,15 +824,14 @@ window.addEventListener('message', function(e) {
     var cur = pageStack[stackIndex];
     if (!cur) return;
     if (!cur.edits) cur.edits = [];
-    // 更新或追加（同一 xpath 只保留最新值）
     var found = false;
     for (var ei = 0; ei < cur.edits.length; ei++) {
-      if (cur.edits[ei].xpath === e.data.xpath && cur.edits[ei].type === 'innerHTML') {
+      if (cur.edits[ei].eid === e.data.eid) {
         cur.edits[ei].innerHTML = e.data.innerHTML;
         found = true; break;
       }
     }
-    if (!found) cur.edits.push({ type: 'innerHTML', xpath: e.data.xpath, innerHTML: e.data.innerHTML });
+    if (!found) cur.edits.push({ eid: e.data.eid, innerHTML: e.data.innerHTML });
   }
 });
 
@@ -1078,15 +1067,22 @@ function applyEditsToOriginal(originalHtml, edits) {
   var origDoc = parser.parseFromString(originalHtml, 'text/html');
 
   edits.forEach(function(edit) {
-    try {
-      var result = origDoc.evaluate(edit.xpath, origDoc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      var el = result.singleNodeValue;
-      if (!el) return;
-      if (edit.type === 'innerHTML') {
-        el.innerHTML = edit.innerHTML;
-      }
-    } catch(e) {}
+    var el = origDoc.querySelector('[data-eid="' + edit.eid + '"]');
+    if (!el) return;
+    // innerHTML 里可能含有编辑器注入的覆盖层，需要清理
+    var tmp = parser.parseFromString('<div>' + edit.innerHTML + '</div>', 'text/html');
+    // 移除编辑器注入的 span 覆盖层
+    tmp.querySelectorAll('span[style*="position:absolute"]').forEach(function(s) { s.remove(); });
+    tmp.querySelectorAll('span[style*="position:relative"]').forEach(function(wrapper) {
+      // 把 wrapper 里的真实内容（img/video/a/button）提取出来
+      var inner = wrapper.querySelector('img, video, a, button');
+      if (inner) wrapper.replaceWith(inner);
+    });
+    el.innerHTML = tmp.querySelector('div').innerHTML;
   });
+
+  // 清理 data-eid 属性
+  origDoc.querySelectorAll('[data-eid]').forEach(function(el) { el.removeAttribute('data-eid'); });
 
   return '<!DOCTYPE html>\n' + origDoc.documentElement.outerHTML;
 }
