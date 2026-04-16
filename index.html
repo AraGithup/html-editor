@@ -284,6 +284,7 @@ let currentMediaTag = null;
 let isEditing = false;
 let assetMap = {};
 let isFolderUpload = false;
+let edits = {};  // filename → { eid: innerHTML } 文字编辑记录
 let originalFiles = {};   // filename → File 对象
 let fileHandles = {};     // filename → FileSystemFileHandle（File System Access API）
 let dirHandle = null;     // FileSystemDirectoryHandle（文件夹上传时）
@@ -302,8 +303,18 @@ function updateNavButtons() {
 }
 
 function pushPage(html, filename, snapshot) {
+  // 给原始 HTML 打上 data-eid，供 applyEdits 定位节点
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(html, 'text/html');
+  var counter = 0;
+  doc.querySelectorAll('body *').forEach(function(el) {
+    if (el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE') {
+      el.dataset.eid = 'e' + (counter++);
+    }
+  });
+  var taggedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
   pageStack = pageStack.slice(0, stackIndex + 1);
-  pageStack.push({ html: html, filename: filename, snapshot: snapshot || null });
+  pageStack.push({ html: taggedHtml, filename: filename, snapshot: snapshot || null });
   stackIndex = pageStack.length - 1;
   updateNavButtons();
 }
@@ -331,6 +342,21 @@ const INJECT_SCRIPT = `
   document.querySelectorAll('img, video, source').forEach(function(el, i) {
     el.dataset.editorId = 'media_' + i;
   });
+
+  // 给所有文字节点打稳定 ID，用于追踪编辑
+  var _eidCounter = 0;
+  document.querySelectorAll('body *').forEach(function(el) {
+    if (!el.dataset.editorBtn && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE') {
+      el.dataset.eid = 'e' + (_eidCounter++);
+    }
+  });
+
+  // 监听文字编辑，发给父页面
+  document.addEventListener('input', function(e) {
+    var el = e.target;
+    if (!el.dataset.eid) return;
+    window.parent.postMessage({ type: 'TEXT_EDIT', eid: el.dataset.eid, html: el.innerHTML }, '*');
+  }, true);
 
   // 链接/按钮交互：
   // - 直接点击 → 触发跳转/onclick
@@ -671,6 +697,7 @@ function loadHTMLFile(file) {
     checkExternalResources(html);
     pageStack = [];
     stackIndex = -1;
+    edits = {};
     pushPage(html, file.name);
     renderPage(html);
     document.getElementById('editor-frame').style.display = 'block';
@@ -743,6 +770,12 @@ window.addEventListener('message', function(e) {
     var input = document.getElementById('media-file-input');
     input.accept = (e.data.tag === 'IMG') ? 'image/*' : 'video/*';
     input.click();
+  } else if (e.data.type === 'TEXT_EDIT') {
+    var curFilename = pageStack[stackIndex] && pageStack[stackIndex].filename;
+    if (curFilename) {
+      if (!edits[curFilename]) edits[curFilename] = {};
+      edits[curFilename][e.data.eid] = e.data.html;
+    }
   } else if (e.data.type === 'LINK_CLICK') {
     showLinkEditor(e.data);
   } else if (e.data.type === 'NAVIGATE') {
@@ -1010,21 +1043,36 @@ function showSaveDialog() {
   };
 }
 
+function applyEdits(html, filename) {
+  var fileEdits = edits[filename];
+  if (!fileEdits || Object.keys(fileEdits).length === 0) return html;
+  // 用 DOMParser 解析原始 HTML，把编辑内容 patch 进去
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(html, 'text/html');
+  Object.keys(fileEdits).forEach(function(eid) {
+    var el = doc.querySelector('[data-eid="' + eid + '"]');
+    if (el) el.innerHTML = fileEdits[eid];
+  });
+  // 清理 data-eid 属性
+  doc.querySelectorAll('[data-eid]').forEach(function(el) { el.removeAttribute('data-eid'); });
+  return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+}
+
 function doDownload(mode) {
-  saveCurrentPage();
-  // 按文件名去重，保留每个文件最新的一帧（含编辑内容）
+  // 按文件名去重，保留每个文件最早的一帧（原始 HTML）
   var seen = {};
   var unique = [];
-  for (var i = pageStack.length - 1; i >= 0; i--) {
+  for (var i = 0; i < pageStack.length; i++) {
     var p = pageStack[i];
     if (!seen[p.filename]) {
       seen[p.filename] = true;
-      unique.unshift(p);
+      unique.push(p);
     }
   }
   unique.forEach(function(page, i) {
     setTimeout(function() {
-      var rawHtml = page.editedHtml || page.html;
+      // 用原始 HTML + 编辑 patch，不用 editedHtml（避免 SPA 状态污染）
+      var rawHtml = applyEdits(page.html, page.filename);
       var html = (mode === 'relative') ? restoreRelativePaths(rawHtml) : rawHtml;
       var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
