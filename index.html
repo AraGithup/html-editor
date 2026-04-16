@@ -199,6 +199,11 @@
 
   <div class="sep"></div>
 
+  <button class="tb-btn icon" id="btn-back" title="返回上一页" disabled>◀</button>
+  <button class="tb-btn icon" id="btn-forward" title="前进下一页" disabled>▶</button>
+
+  <div class="sep"></div>
+
   <button class="tb-btn icon" id="btn-bold" title="加粗 (Ctrl+B)"><b>B</b></button>
   <button class="tb-btn icon" id="btn-italic" title="斜体 (Ctrl+I)"><i>I</i></button>
   <button class="tb-btn icon" id="btn-underline" title="下划线 (Ctrl+U)"><u>U</u></button>
@@ -271,6 +276,29 @@ let currentMediaId = null;
 let currentMediaTag = null;
 let isEditing = false;
 
+// ── 页面历史栈（存储每页的 HTML 字符串） ──
+let pageStack = [];   // [{html, filename}]
+let stackIndex = -1;  // 当前位置
+
+function updateNavButtons() {
+  document.getElementById('btn-back').disabled = stackIndex <= 0;
+  document.getElementById('btn-forward').disabled = stackIndex >= pageStack.length - 1;
+}
+
+function pushPage(html, filename) {
+  // 截断前进历史
+  pageStack = pageStack.slice(0, stackIndex + 1);
+  pageStack.push({ html, filename });
+  stackIndex = pageStack.length - 1;
+  updateNavButtons();
+}
+
+function renderPage(html) {
+  var injected = injectEditScript(html);
+  var frame = document.getElementById('editor-frame');
+  frame.srcdoc = injected;
+}
+
 // ── 注入到用户 HTML 的编辑脚本 ──
 const INJECT_SCRIPT = `
 <script id="__editor_inject__">
@@ -280,15 +308,20 @@ const INJECT_SCRIPT = `
   document.body.spellcheck = false;
 
   // 给所有媒体元素打 ID
-  var mediaEls = document.querySelectorAll('img, video, source');
-  mediaEls.forEach(function(el, i) {
+  document.querySelectorAll('img, video, source').forEach(function(el, i) {
     el.dataset.editorId = 'media_' + i;
   });
 
-  // 拦截链接点击
+  // 拦截链接点击 → 通知父页面导航
   document.addEventListener('click', function(e) {
     var a = e.target.closest('a');
-    if (a) { e.preventDefault(); }
+    if (!a) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var href = a.getAttribute('href');
+    if (href && href !== '#' && !href.startsWith('javascript')) {
+      window.parent.postMessage({ type: 'NAVIGATE', href: href }, '*');
+    }
   }, true);
 
   // 给图片/视频加替换按钮覆盖层
@@ -332,6 +365,13 @@ const INJECT_SCRIPT = `
 })();
 <\/script>`;
 
+function injectEditScript(html) {
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, INJECT_SCRIPT + '</body>');
+  }
+  return html + INJECT_SCRIPT;
+}
+
 // ── 文件上传 ──
 document.getElementById('file-input').addEventListener('change', function(e) {
   var file = e.target.files[0];
@@ -364,27 +404,51 @@ function loadHTMLFile(file) {
   var reader = new FileReader();
   reader.onload = function(e) {
     var html = e.target.result;
-
-    // 检测外部资源
-    var hasExternal = /<link\s[^>]*href=["'][^"'#][^"']*["']/i.test(html) ||
-                      /<script\s[^>]*src=["'][^"'http][^"']*["']/i.test(html);
-    document.getElementById('warning-bar').style.display = hasExternal ? 'block' : 'none';
-
-    // 注入编辑脚本（在 </body> 前，或末尾）
-    if (/<\/body>/i.test(html)) {
-      html = html.replace(/<\/body>/i, INJECT_SCRIPT + '</body>');
-    } else {
-      html = html + INJECT_SCRIPT;
-    }
-
-    var frame = document.getElementById('editor-frame');
-    frame.srcdoc = html;
-    frame.style.display = 'block';
+    checkExternalResources(html);
+    pageStack = [];
+    stackIndex = -1;
+    pushPage(html, file.name);
+    renderPage(html);
+    document.getElementById('editor-frame').style.display = 'block';
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('btn-download').disabled = false;
     isEditing = true;
   };
   reader.readAsText(file, 'UTF-8');
+}
+
+function checkExternalResources(html) {
+  var hasExternal = /<link\s[^>]*href=["'][^"'#][^"']*["']/i.test(html) ||
+                    /<script\s[^>]*src=["'][^"'http][^"']*["']/i.test(html);
+  document.getElementById('warning-bar').style.display = hasExternal ? 'block' : 'none';
+}
+
+// ── 前进/后退 ──
+document.getElementById('btn-back').addEventListener('click', function() {
+  if (stackIndex <= 0) return;
+  // 保存当前页编辑内容
+  saveCurrentPage();
+  stackIndex--;
+  renderPage(pageStack[stackIndex].html);
+  updateNavButtons();
+});
+
+document.getElementById('btn-forward').addEventListener('click', function() {
+  if (stackIndex >= pageStack.length - 1) return;
+  saveCurrentPage();
+  stackIndex++;
+  renderPage(pageStack[stackIndex].html);
+  updateNavButtons();
+});
+
+// 保存当前 iframe 内容到历史栈
+function saveCurrentPage() {
+  if (!isEditing || stackIndex < 0) return;
+  var frame = document.getElementById('editor-frame');
+  var doc = frame.contentDocument;
+  if (!doc) return;
+  var html = serializeHTML(doc);
+  pageStack[stackIndex].html = html;
 }
 
 // ── postMessage 接收 ──
@@ -395,6 +459,18 @@ window.addEventListener('message', function(e) {
     var input = document.getElementById('media-file-input');
     input.accept = (e.data.tag === 'IMG') ? 'image/*' : 'video/*';
     input.click();
+  } else if (e.data.type === 'NAVIGATE') {
+    var href = e.data.href;
+    // 只处理相对路径的 .html 链接（多页面站点内部跳转）
+    if (/^https?:\/\//i.test(href)) {
+      // 外部链接：在新标签打开
+      window.open(href, '_blank');
+      return;
+    }
+    // 内部链接：提示用户上传目标页面
+    var msg = '检测到页面跳转链接：' + href + '\n\n要编辑目标页面，请上传对应的 HTML 文件。\n当前页面的编辑内容已保存，可用 ◀ 返回。';
+    saveCurrentPage();
+    alert(msg);
   } else if (e.data.type === 'MEDIA_HOVER') {
     document.getElementById('media-hint').style.display = e.data.show ? 'block' : 'none';
   }
@@ -503,30 +579,35 @@ function updateToolbarState() {
 // iframe 加载完成后监听 selectionchange
 document.getElementById('editor-frame').addEventListener('load', function() {
   var doc = this.contentDocument;
-  if (!doc) return;
+  if (!doc || !doc.body) return;
   doc.addEventListener('selectionchange', updateToolbarState);
   doc.addEventListener('keyup', updateToolbarState);
 });
 
-// ── 下载保存 ──
-function downloadHTML() {
-  if (!isEditing) return;
-  var frame = document.getElementById('editor-frame');
-  var doc = frame.contentDocument;
+// ── 序列化（清理注入痕迹） ──
+function serializeHTML(doc) {
   var html = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
-
-  // 清理注入的脚本
   html = html.replace(/<script id="__editor_inject__">[\s\S]*?<\/script>/g, '');
-
-  // 清理 contenteditable 和 data-editor-id
   html = html.replace(/\s*contenteditable="true"/gi, '');
   html = html.replace(/\s*spellcheck="false"/gi, '');
   html = html.replace(/\s*data-editor-id="[^"]*"/gi, '');
+  html = html.replace(/\s*data-overlay-added="[^"]*"/gi, '');
+  // 清理替换按钮覆盖层（wrapper span + 🔄按钮），还原原始 img/video
+  html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span style="position:absolute[^"]*"[^>]*>🔄 替换<\/span><\/span>/g, function(_, inner) {
+    return inner.trim();
+  });
+  return html;
+}
 
+// ── 下载保存 ──
+function downloadHTML() {
+  if (!isEditing) return;
+  saveCurrentPage();
+  var html = pageStack[stackIndex].html;
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'edited.html';
+  a.download = (pageStack[stackIndex].filename) || 'edited.html';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
