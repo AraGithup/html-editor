@@ -285,6 +285,7 @@ let isEditing = false;
 let assetMap = {};
 let isFolderUpload = false;
 let originalFiles = {};  // filename → File 对象（用于更新原稿）
+let allPages = {};       // filename → html 字符串（文件夹上传时所有 HTML）
 
 // ── 页面历史栈（存储每页的 HTML 字符串） ──
 let pageStack = [];   // [{html, filename}]
@@ -622,13 +623,14 @@ function simulateFolderUpload(files) {
   var htmlFiles = files.filter(function(f) { return /\.html?$/i.test(f.name); });
   if (!htmlFiles.length) { alert('文件夹中没有找到 HTML 文件'); return; }
   assetMap = {};
+  allPages = {};
   isFolderUpload = true;
-  var pending = nonHtml.length;
+  var pending = nonHtml.length + htmlFiles.length;
   function onReady() {
     if (htmlFiles.length === 1) loadHTMLFile(htmlFiles[0]);
     else showHTMLPicker(htmlFiles);
   }
-  if (!pending) { onReady(); return; }
+  // 读取所有非 HTML 资源
   nonHtml.forEach(function(file) {
     var reader = new FileReader();
     reader.onload = function(ev) {
@@ -639,6 +641,17 @@ function simulateFolderUpload(files) {
     };
     reader.readAsDataURL(file);
   });
+  // 读取所有 HTML 文件，存入 allPages
+  htmlFiles.forEach(function(file) {
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      allPages[file.name] = ev.target.result;
+      originalFiles[file.name] = file;
+      if (--pending === 0) onReady();
+    };
+    reader.readAsText(file, 'UTF-8');
+  });
+  if (!pending) onReady();
 }
 
 function loadHTMLFile(file) {
@@ -725,16 +738,14 @@ window.addEventListener('message', function(e) {
       window.open(href, '_blank');
       return;
     }
-    // 内部链接：先在已加载的页面里找
+    // 내부 링크: allPages에서 찾아 pushPage로 히스토리에 추가
     var basename = href.replace(/^.*\//, '').replace(/[?#].*$/, '');
-    var idx = pageStack.findIndex(function(p) {
-      return p.filename === basename || p.filename === href;
-    });
-    if (idx !== -1) {
+    var targetFilename = allPages[basename] ? basename : (allPages[href] ? href : null);
+    if (targetFilename) {
       saveCurrentPage();
-      var target = pageStack[idx];
-      pushPage(target.html, target.filename);
-      renderPage(target.html);
+      var html = inlineAssets(allPages[targetFilename]);
+      pushPage(html, targetFilename);
+      renderPage(html);
     } else if (href && href !== '#') {
       alert('检测到页面跳转：' + href + '\n\n目标页面未上传，请通过"上传文件夹"一次性加载整个项目。');
     }
