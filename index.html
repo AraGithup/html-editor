@@ -319,10 +319,10 @@ function pushPage(html, filename, snapshot) {
   updateNavButtons();
 }
 
-function renderPage(html) {
-  var injected = injectEditScript(html);
+function renderPage(html, filename) {
+  var rendered = filename ? applyEdits(html, filename) : html;
   var frame = document.getElementById('editor-frame');
-  frame.srcdoc = injected;
+  frame.srcdoc = injectEditScript(rendered);
 }
 
 function renderSnapshot(snapshot) {
@@ -704,7 +704,7 @@ function loadHTMLFile(file) {
     stackIndex = -1;
     edits = {};
     pushPage(html, file.name);
-    renderPage(pageStack[0].html);
+    renderPage(pageStack[0].html, pageStack[0].filename);
     document.getElementById('editor-frame').style.display = 'block';
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('btn-download').disabled = false;
@@ -738,21 +738,19 @@ function checkExternalResources(html) {
 // ── 前进/后退/撤销 ──
 document.getElementById('btn-back').addEventListener('click', function() {
   if (stackIndex <= 0) return;
-  saveCurrentPage();
   stackIndex--;
   var entry = pageStack[stackIndex];
   if (entry.snapshot) renderSnapshot(entry.snapshot);
-  else renderPage(entry.html);
+  else renderPage(entry.html, entry.filename);
   updateNavButtons();
 });
 
 document.getElementById('btn-forward').addEventListener('click', function() {
   if (stackIndex >= pageStack.length - 1) return;
-  saveCurrentPage();
   stackIndex++;
   var entry = pageStack[stackIndex];
   if (entry.snapshot) renderSnapshot(entry.snapshot);
-  else renderPage(entry.html);
+  else renderPage(entry.html, entry.filename);
   updateNavButtons();
 });
 
@@ -796,7 +794,7 @@ window.addEventListener('message', function(e) {
       saveCurrentPage();
       var html = inlineAssets(allPages[targetFilename]);
       pushPage(html, targetFilename);
-      renderPage(pageStack[stackIndex].html);
+      renderPage(pageStack[stackIndex].html, targetFilename);
     } else if (href && href !== '#') {
       alert('检测到页面跳转：' + href + '\n\n目标页面未上传，请通过"上传文件夹"一次性加载整个项目。');
     }
