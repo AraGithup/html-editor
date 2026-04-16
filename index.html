@@ -759,11 +759,91 @@ function serializeHTML(doc) {
 }
 
 // ── 下载全部页面 ──
+// 保存偏好：'inline'（全部内嵌）或 'relative'（保持相对路径）
+let savePreference = localStorage.getItem('savePreference') || null;
+
 function downloadHTML() {
   if (!isEditing) return;
+  if (savePreference) {
+    doDownload(savePreference);
+  } else {
+    showSaveDialog();
+  }
+}
+
+function showSaveDialog() {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:12px;padding:32px;width:420px;';
+  box.innerHTML = `
+    <h3 style="margin-bottom:8px;font-size:16px;">选择保存方式</h3>
+    <p style="font-size:13px;color:#666;margin-bottom:20px;">如何处理 HTML 中的图片和视频资源？</p>
+    <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:2px solid #4285f4;border-radius:8px;cursor:pointer;margin-bottom:10px;background:#f0f6ff;">
+      <input type="radio" name="saveMode" value="inline" checked style="margin-top:2px;flex-shrink:0;">
+      <span>
+        <strong style="font-size:14px;">全部内嵌（自包含）</strong><br>
+        <span style="font-size:12px;color:#666;">所有图片/视频转为 base64 写入 HTML，文件可独立使用，但体积较大。</span>
+      </span>
+    </label>
+    <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;margin-bottom:20px;background:#fafafa;">
+      <input type="radio" name="saveMode" value="relative" style="margin-top:2px;flex-shrink:0;">
+      <span>
+        <strong style="font-size:14px;">保持相对路径</strong><br>
+        <span style="font-size:12px;color:#666;">只内嵌手动替换过的资源，其余保持原路径。文件体积小，但需与资源文件夹一起使用。</span>
+      </span>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;margin-bottom:20px;cursor:pointer;">
+      <input type="checkbox" id="save-remember"> 记住我的选择
+    </label>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button id="save-cancel" style="padding:8px 20px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer;font-size:14px;">取消</button>
+      <button id="save-confirm" style="padding:8px 20px;border:none;border-radius:6px;background:#34a853;color:#fff;cursor:pointer;font-size:14px;font-weight:500;">下载</button>
+    </div>
+  `;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  // 点击选项高亮
+  box.querySelectorAll('input[name="saveMode"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      box.querySelectorAll('label').forEach(function(l) {
+        if (l.querySelector('input[name="saveMode"]')) {
+          l.style.border = '1px solid #ddd';
+          l.style.background = '#fafafa';
+        }
+      });
+      var parentLabel = radio.closest('label');
+      parentLabel.style.border = '2px solid #4285f4';
+      parentLabel.style.background = '#f0f6ff';
+    });
+  });
+
+  document.getElementById('save-cancel').onclick = function() {
+    document.body.removeChild(overlay);
+  };
+  document.getElementById('save-confirm').onclick = function() {
+    var mode = box.querySelector('input[name="saveMode"]:checked').value;
+    var remember = document.getElementById('save-remember').checked;
+    if (remember) {
+      savePreference = mode;
+      localStorage.setItem('savePreference', mode);
+    }
+    document.body.removeChild(overlay);
+    doDownload(mode);
+  };
+}
+
+function doDownload(mode) {
   saveCurrentPage();
-  // 逐个下载，间隔 300ms 避免浏览器拦截
-  pageStack.forEach(function(page, i) {
+  var pagesToSave = pageStack.map(function(page) {
+    if (mode === 'relative') {
+      // 把 base64 还原回原始相对路径（仅还原未被用户手动替换的）
+      return { html: restoreRelativePaths(page.html), filename: page.filename };
+    }
+    return page;
+  });
+  pagesToSave.forEach(function(page, i) {
     setTimeout(function() {
       var blob = new Blob([page.html], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
@@ -776,6 +856,23 @@ function downloadHTML() {
       document.body.removeChild(a);
       URL.revokeObjectURL(a.href);
     }, i * 300);
+  });
+}
+
+// 把 assetMap 中的 base64 还原为原始相对路径
+function restoreRelativePaths(html) {
+  // 构建反向映射：base64 → 相对路径
+  var reverseMap = {};
+  Object.keys(assetMap).forEach(function(key) {
+    // 只保留相对路径 key（含 / 或不含 / 的文件名），跳过纯文件名重复项
+    if (!reverseMap[assetMap[key]]) {
+      reverseMap[assetMap[key]] = key;
+    }
+  });
+  return html.replace(/(src|href)="(data:[^"]+)"/gi, function(match, attr, dataUrl) {
+    var original = reverseMap[dataUrl];
+    if (original) return attr + '="' + original + '"';
+    return match;  // 用户手动替换的，保留 base64
   });
 }
 </script>
