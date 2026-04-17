@@ -348,29 +348,24 @@ const INJECT_SCRIPT = `
   // 在 iframe 内 clone body，剥离所有编辑器注入元素，只发干净的 body innerHTML
   function getCleanBodyHtml() {
     var clone = document.body.cloneNode(true);
-    // 删掉编辑器注入的覆盖按钮（data-editor-btn）
+    // 1. 删掉所有编辑器注入的按钮（data-editor-btn）
     clone.querySelectorAll('[data-editor-btn]').forEach(function(el) { el.remove(); });
-    // 解包媒体替换 wrapper：把 img/video 从 span wrapper 里提出来
+    // 2. 解包编辑器 wrapper span（data-editor-wrapper），把子元素提出来，删掉 wrapper
+    clone.querySelectorAll('[data-editor-wrapper]').forEach(function(wrapper) {
+      while (wrapper.firstChild) {
+        wrapper.parentNode.insertBefore(wrapper.firstChild, wrapper);
+      }
+      wrapper.remove();
+    });
+    // 3. 清理编辑器打的 data-* 属性
     clone.querySelectorAll('[data-overlay-added]').forEach(function(el) {
       el.removeAttribute('data-overlay-added');
       el.removeAttribute('data-editor-id');
-      var wrapper = el.parentNode;
-      if (wrapper && wrapper.tagName === 'SPAN' && wrapper.style.position === 'relative') {
-        wrapper.parentNode.insertBefore(el, wrapper);
-        wrapper.remove();
-      }
     });
-    // 解包链接编辑 wrapper
     clone.querySelectorAll('[data-link-overlay-added]').forEach(function(el) {
       el.removeAttribute('data-link-overlay-added');
       el.removeAttribute('data-link-id');
-      var wrapper = el.parentNode;
-      if (wrapper && wrapper.tagName === 'SPAN' && wrapper.style.position === 'relative') {
-        wrapper.parentNode.insertBefore(el, wrapper);
-        wrapper.remove();
-      }
     });
-    // 去掉 contenteditable / spellcheck
     clone.removeAttribute('contenteditable');
     clone.removeAttribute('spellcheck');
     return clone.innerHTML;
@@ -437,6 +432,7 @@ const INJECT_SCRIPT = `
     el.dataset.overlayAdded = '1';
     var wrapper = document.createElement('span');
     wrapper.style.cssText = 'position:relative;display:inline-block;';
+    wrapper.dataset.editorWrapper = '1';
     el.parentNode.insertBefore(wrapper, el);
     wrapper.appendChild(el);
     var btn = document.createElement('span');
@@ -457,6 +453,7 @@ const INJECT_SCRIPT = `
     el.dataset.linkOverlayAdded = '1';
     var wrapper = document.createElement('span');
     wrapper.style.cssText = 'position:relative;display:inline-block;';
+    wrapper.dataset.editorWrapper = '1';
     el.parentNode.insertBefore(wrapper, el);
     wrapper.appendChild(el);
     var btn = document.createElement('span');
@@ -1065,17 +1062,19 @@ function serializeHTML_clean(html) {
 }
 
 function doDownload(mode) {
-  // 按文件名去重，保留每个文件最早的一帧（原始 HTML）
-  var seen = {};
-  var unique = [];
-  for (var i = 0; i < pageStack.length; i++) {
-    var p = pageStack[i];
-    if (!seen[p.filename]) {
-      seen[p.filename] = true;
-      unique.push(p);
-    }
+  // 下载所有页面：allPages 有多页时下载全部，单文件时只下载当前页
+  var pages = [];
+  if (Object.keys(allPages).length > 0) {
+    // 文件夹上传：下载所有页面（含未访问过的）
+    Object.keys(allPages).forEach(function(filename) {
+      pages.push({ html: inlineAssets(allPages[filename]), filename: filename });
+    });
+  } else {
+    // 单文件上传：只有当前页
+    var cur = pageStack[stackIndex];
+    if (cur) pages.push(cur);
   }
-  unique.forEach(function(page, i) {
+  pages.forEach(function(page, i) {
     setTimeout(function() {
       var rawHtml = applyBodyEdit(page.html, page.filename);
       var html = (mode === 'relative') ? restoreRelativePaths(rawHtml) : rawHtml;
