@@ -284,7 +284,7 @@ let currentMediaTag = null;
 let isEditing = false;
 let assetMap = {};
 let isFolderUpload = false;
-let edits = {};  // filename → 完整编辑后的 HTML 字符串
+let edits = {};  // filename → 干净的 body innerHTML（编辑记录）
 let originalFiles = {};   // filename → File 对象
 let fileHandles = {};     // filename → FileSystemFileHandle（File System Access API）
 let dirHandle = null;     // FileSystemDirectoryHandle（文件夹上传时）
@@ -309,17 +309,26 @@ function pushPage(html, filename, snapshot) {
   updateNavButtons();
 }
 
+// edits[filename] 있으면 원본 HTML의 body를 교체해서 반환
+function applyBodyEdit(html, filename) {
+  var bodyHtml = edits[filename];
+  if (!bodyHtml) return html;
+  return html.replace(/<body[^>]*>[\s\S]*<\/body>/i, function(match) {
+    var tag = match.match(/^<body[^>]*>/i)[0];
+    return tag + bodyHtml + '</body>';
+  });
+}
+
 function renderPage(html, filename) {
-  var rendered = (filename && getEditedHtml(filename)) || html;
   var frame = document.getElementById('editor-frame');
-  frame.srcdoc = injectEditScript(rendered);
+  frame.srcdoc = injectEditScript(applyBodyEdit(html, filename));
 }
 
 function renderSnapshot(snapshot, filename) {
-  // 如果有编辑记录，优先用编辑后的 HTML（保留文字改动）
-  var html = (filename && getEditedHtml(filename)) || snapshot;
   var frame = document.getElementById('editor-frame');
-  frame.srcdoc = injectEditScript(html);
+  // snapshot 是 SPA 内部状态，但文字编辑优先用 edits
+  var html = pageStack[stackIndex] && applyBodyEdit(pageStack[stackIndex].html, filename);
+  frame.srcdoc = injectEditScript(html || snapshot);
 }
 
 // ── 注入到用户 HTML 的编辑脚本 ──
@@ -335,9 +344,39 @@ const INJECT_SCRIPT = `
     el.dataset.editorId = 'media_' + i;
   });
 
-  // 监听文字编辑，发给父页面（发整个 HTML，不依赖 eid）
+  // 监听文字编辑，发给父页面
+  // 在 iframe 内 clone body，剥离所有编辑器注入元素，只发干净的 body innerHTML
+  function getCleanBodyHtml() {
+    var clone = document.body.cloneNode(true);
+    // 删掉编辑器注入的覆盖按钮（data-editor-btn）
+    clone.querySelectorAll('[data-editor-btn]').forEach(function(el) { el.remove(); });
+    // 解包媒体替换 wrapper：把 img/video 从 span wrapper 里提出来
+    clone.querySelectorAll('[data-overlay-added]').forEach(function(el) {
+      el.removeAttribute('data-overlay-added');
+      el.removeAttribute('data-editor-id');
+      var wrapper = el.parentNode;
+      if (wrapper && wrapper.tagName === 'SPAN' && wrapper.style.position === 'relative') {
+        wrapper.parentNode.insertBefore(el, wrapper);
+        wrapper.remove();
+      }
+    });
+    // 解包链接编辑 wrapper
+    clone.querySelectorAll('[data-link-overlay-added]').forEach(function(el) {
+      el.removeAttribute('data-link-overlay-added');
+      el.removeAttribute('data-link-id');
+      var wrapper = el.parentNode;
+      if (wrapper && wrapper.tagName === 'SPAN' && wrapper.style.position === 'relative') {
+        wrapper.parentNode.insertBefore(el, wrapper);
+        wrapper.remove();
+      }
+    });
+    // 去掉 contenteditable / spellcheck
+    clone.removeAttribute('contenteditable');
+    clone.removeAttribute('spellcheck');
+    return clone.innerHTML;
+  }
   document.addEventListener('input', function(e) {
-    window.parent.postMessage({ type: 'TEXT_EDIT', html: document.documentElement.outerHTML }, '*');
+    window.parent.postMessage({ type: 'TEXT_EDIT', bodyHtml: getCleanBodyHtml() }, '*');
   }, true);
 
   // 链接/按钮交互：
@@ -753,7 +792,7 @@ window.addEventListener('message', function(e) {
   } else if (e.data.type === 'TEXT_EDIT') {
     var curFilename = pageStack[stackIndex] && pageStack[stackIndex].filename;
     if (curFilename) {
-      edits[curFilename] = stripEditorArtifacts(e.data.html);
+      edits[curFilename] = e.data.bodyHtml;
     }
   } else if (e.data.type === 'LINK_CLICK') {
     showLinkEditor(e.data);
@@ -1025,34 +1064,6 @@ function serializeHTML_clean(html) {
   return html.replace(/\s*data-eid="[^"]*"/gi, '');
 }
 
-// 从 iframe outerHTML 中剥离所有编辑器注入的内容，得到干净的用户 HTML
-function stripEditorArtifacts(html) {
-  // 去掉注入脚本
-  html = html.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/gi, '');
-  // 去掉 contenteditable / spellcheck
-  html = html.replace(/\s*contenteditable="[^"]*"/gi, '');
-  html = html.replace(/\s*spellcheck="false"/gi, '');
-  // 去掉编辑器打的 data-* 属性
-  html = html.replace(/\s*data-editor-id="[^"]*"/gi, '');
-  html = html.replace(/\s*data-overlay-added="[^"]*"/gi, '');
-  html = html.replace(/\s*data-link-id="[^"]*"/gi, '');
-  html = html.replace(/\s*data-link-overlay-added="[^"]*"/gi, '');
-  html = html.replace(/\s*data-eid="[^"]*"/gi, '');
-  // 去掉媒体替换按钮的 wrapper span（保留内部的 img/video）
-  html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span[^>]*>🔄[^<]*<\/span><\/span>/g, function(_, inner) {
-    return inner.trim();
-  });
-  // 去掉链接编辑按钮的 wrapper span（保留内部的 a/button）
-  html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span[^>]*>🔗[^<]*<\/span><\/span>/g, function(_, inner) {
-    return inner.trim();
-  });
-  return '<!DOCTYPE html>\n' + html;
-}
-
-function getEditedHtml(filename) {
-  return edits[filename] || null;
-}
-
 function doDownload(mode) {
   // 按文件名去重，保留每个文件最早的一帧（原始 HTML）
   var seen = {};
@@ -1066,7 +1077,7 @@ function doDownload(mode) {
   }
   unique.forEach(function(page, i) {
     setTimeout(function() {
-      var rawHtml = getEditedHtml(page.filename) || serializeHTML_clean(page.html);
+      var rawHtml = applyBodyEdit(page.html, page.filename);
       var html = (mode === 'relative') ? restoreRelativePaths(rawHtml) : rawHtml;
       var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
