@@ -315,9 +315,11 @@ function renderPage(html, filename) {
   frame.srcdoc = injectEditScript(rendered);
 }
 
-function renderSnapshot(snapshot) {
+function renderSnapshot(snapshot, filename) {
+  // 如果有编辑记录，优先用编辑后的 HTML（保留文字改动）
+  var html = (filename && getEditedHtml(filename)) || snapshot;
   var frame = document.getElementById('editor-frame');
-  frame.srcdoc = injectEditScript(snapshot);
+  frame.srcdoc = injectEditScript(html);
 }
 
 // ── 注入到用户 HTML 的编辑脚本 ──
@@ -715,7 +717,7 @@ document.getElementById('btn-back').addEventListener('click', function() {
   if (stackIndex <= 0) return;
   stackIndex--;
   var entry = pageStack[stackIndex];
-  if (entry.snapshot) renderSnapshot(entry.snapshot);
+  if (entry.snapshot) renderSnapshot(entry.snapshot, entry.filename);
   else renderPage(entry.html, entry.filename);
   updateNavButtons();
 });
@@ -724,7 +726,7 @@ document.getElementById('btn-forward').addEventListener('click', function() {
   if (stackIndex >= pageStack.length - 1) return;
   stackIndex++;
   var entry = pageStack[stackIndex];
-  if (entry.snapshot) renderSnapshot(entry.snapshot);
+  if (entry.snapshot) renderSnapshot(entry.snapshot, entry.filename);
   else renderPage(entry.html, entry.filename);
   updateNavButtons();
 });
@@ -751,7 +753,7 @@ window.addEventListener('message', function(e) {
   } else if (e.data.type === 'TEXT_EDIT') {
     var curFilename = pageStack[stackIndex] && pageStack[stackIndex].filename;
     if (curFilename) {
-      edits[curFilename] = e.data.html;
+      edits[curFilename] = stripEditorArtifacts(e.data.html);
     }
   } else if (e.data.type === 'LINK_CLICK') {
     showLinkEditor(e.data);
@@ -777,12 +779,10 @@ window.addEventListener('message', function(e) {
   } else if (e.data.type === 'DOM_SNAPSHOT') {
     var cur = pageStack[stackIndex];
     if (!cur) return;
-    var snap = e.data.html;
-    // 去掉注入脚本，避免重复注入
-    snap = snap.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/i, '');
+    var snap = stripEditorArtifacts(e.data.html);
     // 把当前状态存为新的历史帧（截断前进历史）
     pageStack = pageStack.slice(0, stackIndex + 1);
-    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap, editedHtml: cur.editedHtml });
+    pageStack.push({ html: cur.html, filename: cur.filename, snapshot: snap });
     stackIndex = pageStack.length - 1;
     updateNavButtons();
   }
@@ -1025,28 +1025,32 @@ function serializeHTML_clean(html) {
   return html.replace(/\s*data-eid="[^"]*"/gi, '');
 }
 
-function getEditedHtml(filename, forDownload) {
-  var html = edits[filename] || null;
-  if (!html) return null;
-  if (forDownload) {
-    // 下载时清理编辑器注入的属性和脚本
-    html = '<!DOCTYPE html>\n' + html;
-    html = html.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/gi, '');
-    html = html.replace(/\s*contenteditable="[^"]*"/gi, '');
-    html = html.replace(/\s*spellcheck="false"/gi, '');
-    html = html.replace(/\s*data-editor-id="[^"]*"/gi, '');
-    html = html.replace(/\s*data-overlay-added="[^"]*"/gi, '');
-    html = html.replace(/\s*data-link-id="[^"]*"/gi, '');
-    html = html.replace(/\s*data-link-overlay-added="[^"]*"/gi, '');
-    html = html.replace(/\s*data-bg-id="[^"]*"/gi, '');
-    html = html.replace(/\s*data-bg-overlay-added="[^"]*"/gi, '');
-    html = html.replace(/\s*data-eid="[^"]*"/gi, '');
-    // 清理替换按钮覆盖层
-    html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span style="position:absolute[^"]*"[^>]*>🔄 替换<\/span><\/span>/g, function(_, inner) {
-      return inner.trim();
-    });
-  }
-  return html;
+// 从 iframe outerHTML 中剥离所有编辑器注入的内容，得到干净的用户 HTML
+function stripEditorArtifacts(html) {
+  // 去掉注入脚本
+  html = html.replace(/<script[^>]*id="__editor_inject__"[\s\S]*?<\/script>/gi, '');
+  // 去掉 contenteditable / spellcheck
+  html = html.replace(/\s*contenteditable="[^"]*"/gi, '');
+  html = html.replace(/\s*spellcheck="false"/gi, '');
+  // 去掉编辑器打的 data-* 属性
+  html = html.replace(/\s*data-editor-id="[^"]*"/gi, '');
+  html = html.replace(/\s*data-overlay-added="[^"]*"/gi, '');
+  html = html.replace(/\s*data-link-id="[^"]*"/gi, '');
+  html = html.replace(/\s*data-link-overlay-added="[^"]*"/gi, '');
+  html = html.replace(/\s*data-eid="[^"]*"/gi, '');
+  // 去掉媒体替换按钮的 wrapper span（保留内部的 img/video）
+  html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span[^>]*>🔄[^<]*<\/span><\/span>/g, function(_, inner) {
+    return inner.trim();
+  });
+  // 去掉链接编辑按钮的 wrapper span（保留内部的 a/button）
+  html = html.replace(/<span style="position:relative;display:inline-block;">([\s\S]*?)<span[^>]*>🔗[^<]*<\/span><\/span>/g, function(_, inner) {
+    return inner.trim();
+  });
+  return '<!DOCTYPE html>\n' + html;
+}
+
+function getEditedHtml(filename) {
+  return edits[filename] || null;
 }
 
 function doDownload(mode) {
@@ -1062,7 +1066,7 @@ function doDownload(mode) {
   }
   unique.forEach(function(page, i) {
     setTimeout(function() {
-      var rawHtml = getEditedHtml(page.filename, true) || serializeHTML_clean(page.html);
+      var rawHtml = getEditedHtml(page.filename) || serializeHTML_clean(page.html);
       var html = (mode === 'relative') ? restoreRelativePaths(rawHtml) : rawHtml;
       var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       var a = document.createElement('a');
